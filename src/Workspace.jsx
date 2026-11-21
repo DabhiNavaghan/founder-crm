@@ -29,7 +29,8 @@ export function Workspace({supabase,user,getToken}) {
  const companyFor=id=>data.companies.find(c=>c.id===id);
  const contactFor=id=>data.contacts.find(c=>c.id===id);
  const save=async(table,row)=>{
-  const {data:saved,error:e}=await supabase.from(table).upsert(row).select().single();
+  const options=table==='sender_profiles'?{onConflict:'owner_id'}:undefined;
+  const {data:saved,error:e}=await supabase.from(table).upsert(row,options).select().single();
   if(e){notify(e.message);return null;}
   const key={companies:'companies',contacts:'contacts',outreach_messages:'messages',outreach_events:'events',sender_profiles:'profile'}[table];
   setData(p=>key==='profile'?{...p,profile:saved}:{...p,[key]:[saved,...p[key].filter(x=>x.id!==saved.id)]});
