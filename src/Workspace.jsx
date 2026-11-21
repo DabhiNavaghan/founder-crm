@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Building2, Users, Send, CalendarClock, BarChart3, Settings, Plus, Upload, Download, Search, Linkedin, Mail, Globe2, CheckCircle2, Clock3, Sparkles, Copy, X, ShieldCheck, ArrowRight, Menu, Zap } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { UserButton } from '@clerk/react';
 
 const EMPTY = {companies:[],contacts:[],messages:[],events:[],profile:null};
 const NAV = [{id:'overview',label:'Overview',icon:Building2},{id:'companies',label:'Companies',icon:Building2},{id:'contacts',label:'Contacts',icon:Users},{id:'outreach',label:'Message studio',icon:Send},{id:'queue',label:'Daily queue',icon:CalendarClock},{id:'analytics',label:'Analytics',icon:BarChart3},{id:'profile',label:'My profile',icon:Settings}];
@@ -120,7 +121,7 @@ export function Workspace({supabase,user,getToken}) {
   <aside className={'sidebar '+(mobile?'show':'')}>
    <div className="side-brand"><div className="logo-mark">F</div><span>founderflow<small>RELATIONSHIP OS</small></span><button className="mobile-close" onClick={()=>setMobile(false)}><X/></button></div>
    <div className="side-label">WORKSPACE</div><nav>{NAV.map(item=><button key={item.id} className={page===item.id?'nav-active':''} onClick={()=>{setPage(item.id);setMobile(false)}}><item.icon size={17}/>{item.label}{item.id==='queue'&&<b className="nav-count">{queue.length}</b>}</button>)}</nav>
-   <div className="sidebar-bottom"><div className="secure-pill"><ShieldCheck size={15}/> Your workspace is private</div><div className="user-meta"><b>{user?.fullName||user?.firstName||'Your workspace'}</b><small>{user?.primaryEmailAddress?.emailAddress}</small></div></div>
+   <div className="sidebar-bottom"><div className="secure-pill"><ShieldCheck size={15}/> Your workspace is private</div><div className="user-meta"><div><b>{user?.fullName||user?.firstName||'Your workspace'}</b><small>{user?.primaryEmailAddress?.emailAddress}</small></div><UserButton afterSignOutUrl="/"/></div></div>
   </aside>
   <main className="main-area">
    <header className="topbar"><button className="mobile-menu" onClick={()=>setMobile(true)}><Menu/></button><div className="crumb">Workspace <span>/</span> {pageTitle}</div><div className="top-actions"><span className="live-dot">Cloud workspace</span></div></header>
