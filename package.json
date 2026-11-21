@@ -1,19 +1,17 @@
 {
-  "name": "founder-outreach-crm",
+  "name": "founderflow",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
-  },
+  "scripts": {"dev":"vite","build":"vite build","preview":"vite preview"},
   "dependencies": {
+    "@clerk/react": "6.19.4",
+    "@supabase/supabase-js": "2.99.0",
     "@vitejs/plugin-react": "latest",
-    "vite": "latest",
+    "lucide-react": "0.468.0",
     "react": "latest",
     "react-dom": "latest",
-    "lucide-react": "latest",
+    "vite": "latest",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {}
