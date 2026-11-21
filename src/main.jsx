@@ -3,67 +3,144 @@ import * as XLSX from 'xlsx';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
-const initial = {
-  companies: [
-    { id: 1, name: 'Acme Technologies', country: 'USA', sector: 'SaaS', stage: 'Series A', website: 'https://example.com', status: 'Researching' },
-    { id: 2, name: 'Northstar Labs', country: 'UK', sector: 'Fintech', stage: 'Seed', website: 'https://example.org', status: 'Contacted' }
-  ],
-  contacts: [
-    { id: 1, name: 'Alex Morgan', title: 'Founder & CEO', company: 'Acme Technologies', country: 'USA', email: '', linkedin: '', status: 'Not contacted', next: '' },
-    { id: 2, name: 'Jamie Patel', title: 'Co-founder', company: 'Northstar Labs', country: 'UK', email: '', linkedin: '', status: 'LinkedIn sent', next: '' }
-  ],
-  activities: []
-};
-const stages = ['Not contacted', 'LinkedIn sent', 'Connected', 'Email sent', 'Replied', 'Call booked', 'Proposal sent', 'Won', 'Not a fit'];
-function Field({label,name,placeholder='',type='text',form,setForm}) { return <label className="field">{label}<input type={type} placeholder={placeholder} value={form[name] ?? ''} onChange={e=>setForm(prev=>({...prev,[name]:e.target.value}))}/></label>; }
+const stages = ['Not contacted', 'LinkedIn sent', 'Email sent', 'Connected', 'Replied', 'Call booked', 'Follow-up', 'Won', 'Not a fit'];
+const initial = { companies: [], contacts: [], activities: [] };
+const clean = value => String(value ?? '').trim();
+const yes = value => ['yes','y','true','1','sent','done'].includes(clean(value).toLowerCase());
+const stageFromRow = row => yes(row['Call Booked']) ? 'Call booked' : yes(row.Replied) ? 'Replied' : yes(row['Email Sent']) ? 'Email sent' : yes(row['LinkedIn Sent']) ? 'LinkedIn sent' : 'Not contacted';
+const normalizeCompany = company => ({
+  ...company,
+  status: !company.status || company.status === 'Researching' ? 'Not contacted' : company.status,
+  country: company.country || company.region || '',
+  primaryContact: company.primaryContact || '',
+  primaryContactLink: company.primaryContactLink || '',
+  secondaryContact: company.secondaryContact || '',
+  secondaryContactLink: company.secondaryContactLink || ''
+});
+function readSaved() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('founder-crm-data'));
+    if (!saved) return initial;
+    return { ...initial, ...saved, companies: (saved.companies || []).map(normalizeCompany) };
+  } catch { return initial; }
+}
+function Field({label,name,placeholder='',type='text',form,setForm}) {
+  return <label className="field">{label}<input type={type} placeholder={placeholder} value={form[name] ?? ''} onChange={e=>setForm(prev=>({...prev,[name]:e.target.value}))}/></label>;
+}
+function ExternalLink({href,children}) {
+  if (!href) return <span className="muted">—</span>;
+  const url = /^https?:\/\//i.test(href) ? href : 'https://' + href;
+  return <a href={url} target="_blank" rel="noreferrer" onClick={e=>e.stopPropagation()}>{children || href} ↗</a>;
+}
 function App() {
-  const [data, setData] = useState(() => { try { return JSON.parse(localStorage.getItem('founder-crm-data')) || initial; } catch { return initial; } });
+  const [data, setData] = useState(readSaved);
   const [page, setPage] = useState('Dashboard');
   const [query, setQuery] = useState('');
-  const [modal, setModal] = useState('');
+  const [modal, setModal] = useState(false);
   const [form, setForm] = useState({});
   const [toast, setToast] = useState('');
-  const [selected, setSelected] = useState(null);
+  const [dragging, setDragging] = useState(null);
   const save = next => { setData(next); localStorage.setItem('founder-crm-data', JSON.stringify(next)); };
-  const notify = msg => { setToast(msg); setTimeout(() => setToast(''), 2200); };
-  const filtered = useMemo(() => data.contacts.filter(c => (c.name + c.company + c.title + c.country).toLowerCase().includes(query.toLowerCase())), [data.contacts, query]);
-  const count = status => data.contacts.filter(c => c.status === status).length;
-  const addContact = e => { e.preventDefault(); save({ ...data, contacts: [...data.contacts, { ...form, id: Date.now(), status: form.status || 'Not contacted' }] }); setModal(''); setForm({}); notify('Contact added'); };
-  const addCompany = e => { e.preventDefault(); save({ ...data, companies: [...data.companies, { ...form, id: Date.now(), status: 'Researching' }] }); setModal(''); setForm({}); notify('Company added'); };
-  const removeCompany = company => { if (!window.confirm(`Remove ${company.name}? Its linked contacts will be kept, but their company field will be cleared.`)) return; save({ ...data, companies: data.companies.filter(c => c.id !== company.id), contacts: data.contacts.map(c => c.company === company.name ? { ...c, company: '' } : c) }); notify('Company removed'); };
-  const importCompanies = e => {
-    const file=e.target.files?.[0]; if(!file) return;
-    const reader=new FileReader();
-    reader.onload=event=>{
-      try {
-        const workbook=XLSX.read(event.target.result,{type:'array'});
-        const sheet=workbook.Sheets[workbook.SheetNames[0]];
-        const rows=XLSX.utils.sheet_to_json(sheet,{defval:'',raw:false});
-        const get=(row,...keys)=>{ const normalized=Object.fromEntries(Object.entries(row).map(([k,v])=>[String(k).trim().toLowerCase().replace(/[^a-z0-9]/g,''),String(v??'').trim()])); for(const key of keys){const val=normalized[key.toLowerCase().replace(/[^a-z0-9]/g,'')];if(val)return val;} return ''; };
-        const incoming=rows.map((r,i)=>({id:Date.now()+i,name:get(r,'Company','Company Name','Name'),country:get(r,'Region','Country'),website:get(r,'Company Website','Website','URL'),email:get(r,'Support / Contact Email','Contact Email','Email'),careers:get(r,'Hiring / Careers Page','Careers Page'),linkedin:get(r,'Company LinkedIn','LinkedIn'),primaryContact:get(r,'Primary Contact'),primaryContactLink:get(r,'Primary Contact Link'),secondaryContact:get(r,'Secondary Contact'),secondaryContactLink:get(r,'Secondary Contact Link'),outreachAngle:get(r,'Best Outreach Angle','Outreach Angle'),linkedInSent:get(r,'LinkedIn Sent'),emailSent:get(r,'Email Sent'),replied:get(r,'Replied'),callBooked:get(r,'Call Booked'),notes:get(r,'Notes'),sector:get(r,'Sector','Industry'),stage:get(r,'Funding Stage','Stage'),status:'Researching'})).filter(c=>c.name);
-        const existing=new Set(data.companies.map(c=>(c.website||c.name).toLowerCase()));
-        const fresh=incoming.filter(c=>!existing.has((c.website||c.name).toLowerCase()));
-        save({...data,companies:[...data.companies,...fresh]});
-        notify(fresh.length+' companies imported'+(incoming.length-fresh.length?' · '+(incoming.length-fresh.length)+' duplicates skipped':''));
-      } catch(err) { notify('Could not read this file. Please check the Excel sheet.'); }
-    };
-    reader.readAsArrayBuffer(file); e.target.value='';
+  const notify = msg => { setToast(msg); window.setTimeout(() => setToast(''), 2500); };
+  const companies = useMemo(() => data.companies.filter(c => (c.name + ' ' + c.country + ' ' + c.primaryContact + ' ' + c.secondaryContact + ' ' + c.outreachAngle).toLowerCase().includes(query.toLowerCase())), [data.companies, query]);
+  const count = status => data.companies.filter(c => c.status === status).length;
+  const addCompany = e => {
+    e.preventDefault();
+    if (!clean(form.name)) return;
+    const company = normalizeCompany({ ...form, id: Date.now(), status: 'Not contacted' });
+    save({ ...data, companies: [...data.companies, company] });
+    setModal(false); setForm({}); notify('Company added');
   };
-  const updateStatus = (id, status) => save({ ...data, contacts: data.contacts.map(c => c.id === id ? { ...c, status } : c), activities: [...data.activities, { id: Date.now(), text: 'Moved contact to ' + status, date: new Date().toLocaleDateString() }] });
-  const exportCsv = () => { const rows = [['Name','Title','Company','Country','Email','LinkedIn','Status','Next follow-up'], ...data.contacts.map(c => [c.name,c.title,c.company,c.country,c.email,c.linkedin,c.status,c.next])]; const csv = rows.map(r => r.map(v => '"' + String(v || '').replaceAll('"','""') + '"').join(',')).join('\n'); const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], {type:'text/csv'})); a.download = 'founder-crm-contacts.csv'; a.click(); URL.revokeObjectURL(a.href); };
-  const importCsv = e => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => { const lines = String(reader.result).split(/\r?\n/).slice(1).filter(Boolean); const rows = lines.map(line => line.split(',').map(v => v.replace(/^"|"$/g,''))); const added = rows.map((r,i) => ({ id: Date.now()+i, name:r[0]||'', title:r[1]||'', company:r[2]||'', country:r[3]||'', email:r[4]||'', linkedin:r[5]||'', status:r[6]||'Not contacted', next:r[7]||'' })); save({ ...data, contacts:[...data.contacts,...added] }); notify(added.length + ' contacts imported'); }; reader.readAsText(file); e.target.value=''; };
-  const nav = ['Dashboard','Companies','Contacts','Pipeline','Follow-ups'];
-  return <div className="app"><aside className="sidebar"><div className="brand"><div className="brand-mark">F</div><div><b>FounderFlow</b><small>OUTREACH CRM</small></div></div><div className="workspace">WORKSPACE <span>PERSONAL</span></div><nav>{nav.map((n,i)=><button key={n} className={page===n?'active':''} onClick={()=>setPage(n)}><span className="nav-icon">{['◫','▦','◎','⇄','◷'][i]}</span>{n}{n==='Follow-ups' && <em>{data.contacts.filter(c=>c.next && new Date(c.next)<new Date()).length}</em>}</button>)}</nav><div className="sidebar-bottom"><div className="avatar">ND</div><div><b>My workspace</b><small>Private CRM</small></div><span className="dots">•••</span></div></aside><main className="main"><header><div><span className="eyebrow">YOUR OUTREACH WORKSPACE</span><h1>{page}</h1></div><div className="header-actions"><button className="btn ghost" onClick={exportCsv}>↓ Export</button><button className="btn primary" onClick={()=>{setForm({});setModal(page==='Companies'?'company':'contact')}}>＋ Add {page==='Companies'?'company':'contact'}</button></div></header>
-  {page==='Dashboard' && <><section className="welcome"><div><span className="eyebrow light">MONDAY · YOUR NEXT OPPORTUNITY STARTS HERE</span><h2>Build meaningful<br/>founder relationships.</h2><p>Keep every conversation moving, from first touch to signed partnership.</p></div><div className="welcome-art"><div className="orbit o1"></div><div className="orbit o2"></div><div className="orbit-core">✳</div><span className="orb-tag">CONNECT · BUILD · GROW</span></div></section><section className="stats"><Stat label="Companies" value={data.companies.length} sub="In your target list"/><Stat label="People identified" value={data.contacts.length} sub="Founder-level contacts"/><Stat label="Outreach sent" value={data.contacts.filter(c=>c.status!=='Not contacted').length} sub="Contacts approached"/><Stat label="Replies received" value={count('Replied')} sub="Conversations started"/></section><div className="two-col"><section className="panel"><div className="panel-head"><div><h3>Outreach pipeline</h3><p>Track progress across your relationships</p></div><button className="text-btn" onClick={()=>setPage('Pipeline')}>View pipeline ↗</button></div><div className="pipeline-list">{stages.slice(0,6).map((s,i)=><div className="pipeline-row" key={s}><span className="stage-dot" style={{opacity:1-i*.1}}></span><span>{s}</span><div className="bar"><i style={{width:(data.contacts.length?Math.max(4,count(s)/data.contacts.length*100):0)+'%'}}/></div><b>{count(s)}</b></div>)}</div></section><section className="panel"><div className="panel-head"><div><h3>Priority follow-ups</h3><p>Don't let a good conversation go cold</p></div><button className="text-btn" onClick={()=>setPage('Follow-ups')}>See all ↗</button></div>{data.contacts.filter(c=>c.next).slice(0,4).map(c=><div className="follow-row" key={c.id}><div className="mini-avatar">{c.name.slice(0,1)}</div><div className="follow-info"><b>{c.name}</b><small>{c.company}</small></div><span className="date">{c.next}</span></div>)}{!data.contacts.some(c=>c.next)&&<div className="empty-small">Your follow-up list is clear.<br/><small>Add a next follow-up date to a contact.</small></div>}</section></div></>}
-  {page==='Companies' && <section className="panel"><div className="panel-head"><div><h3>Target companies</h3><p>Organizations you want to build relationships with</p></div><div className="table-tools"><label className="btn ghost upload">↑ Import Excel<input type="file" accept=".xlsx,.xls,.csv" onChange={importCompanies}/></label><span className="count-pill">{data.companies.length} companies</span></div></div><div className="table-wrap"><table><thead><tr><th>COMPANY</th><th>REGION</th><th>PRIMARY CONTACT</th><th>OUTREACH ANGLE</th><th>STATUS</th><th></th></tr></thead><tbody>{data.companies.map(c=><tr key={c.id}><td><b>{c.name}</b><small className="subcell">{c.website}</small></td><td>{c.country}</td><td>{c.primaryContact||'—'}</td><td>{c.outreachAngle||c.sector||'—'}</td><td><span className="status">{c.status}</span></td><td><button className="text-btn danger" onClick={()=>removeCompany(c)} aria-label={`Remove ${c.name}`}>Remove</button></td></tr>)}</tbody></table>{!data.companies.length&&<Empty/>}</div></section>}
-  {page==='Contacts' && <section className="panel"><div className="panel-head"><div><h3>People & relationships</h3><p>Founder and decision-maker contact directory</p></div><div className="table-tools"><input className="search" placeholder="Search contacts..." value={query} onChange={e=>setQuery(e.target.value)}/><label className="btn ghost upload">↑ Import CSV<input type="file" accept=".csv" onChange={importCsv}/></label></div></div><div className="table-wrap"><table><thead><tr><th>CONTACT</th><th>COMPANY</th><th>COUNTRY</th><th>STATUS</th><th>NEXT FOLLOW-UP</th><th></th></tr></thead><tbody>{filtered.map(c=><tr key={c.id}><td><b>{c.name}</b><small className="subcell">{c.title}</small></td><td>{c.company}</td><td>{c.country}</td><td><select className="status-select" value={c.status} onChange={e=>updateStatus(c.id,e.target.value)}>{stages.map(s=><option key={s}>{s}</option>)}</select></td><td>{c.next||'—'}</td><td><button className="text-btn" onClick={()=>setSelected(c)}>Open</button></td></tr>)}</tbody></table>{!filtered.length&&<Empty/>}</div></section>}
-  {page==='Pipeline' && <div className="kanban">{stages.map(s=><section className="kanban-col" key={s}><div className="kanban-title">{s}<span>{count(s)}</span></div>{data.contacts.filter(c=>c.status===s).map(c=><article className="kanban-card" key={c.id}><b>{c.name}</b><small>{c.title}</small><p>{c.company}</p><select value={c.status} onChange={e=>updateStatus(c.id,e.target.value)}>{stages.map(x=><option key={x}>{x}</option>)}</select></article>)}</section>)}</div>}
-  {page==='Follow-ups' && <section className="panel"><div className="panel-head"><div><h3>Follow-up queue</h3><p>Contacts with a scheduled next action</p></div></div>{data.contacts.filter(c=>c.next).sort((a,b)=>a.next.localeCompare(b.next)).map(c=><div className="follow-row" key={c.id}><div className="mini-avatar">{c.name.slice(0,1)}</div><div className="follow-info"><b>{c.name}</b><small>{c.company} · {c.status}</small></div><span className="date">{c.next}</span><button className="text-btn" onClick={()=>setSelected(c)}>View</button></div>)}{!data.contacts.some(c=>c.next)&&<Empty/>}</section>}
-  <footer>FounderFlow CRM <span>Private workspace · Data saved in this browser</span></footer></main>
-  {modal && <div className="overlay" onClick={()=>setModal('')}><form className="modal" onClick={e=>e.stopPropagation()} onSubmit={modal==='company'?addCompany:addContact}><div className="modal-head"><div><span className="eyebrow">ADD TO YOUR WORKSPACE</span><h2>New {modal}</h2></div><button type="button" className="close" onClick={()=>setModal('')}>×</button></div>{modal==='company'?<><Field form={form} setForm={setForm} label="Company name" name="name" placeholder="e.g. Acme Technologies"/><Field form={form} setForm={setForm} label="Website" name="website" placeholder="https://"/><div className="form-grid"><Field form={form} setForm={setForm} label="Country" name="country" placeholder="USA, UK, UAE"/><Field form={form} setForm={setForm} label="Sector" name="sector" placeholder="Fintech, SaaS..."/></div><Field form={form} setForm={setForm} label="Funding stage" name="stage" placeholder="Seed, Series A..."/></>:<><Field form={form} setForm={setForm} label="Full name" name="name" placeholder="Contact name"/><Field form={form} setForm={setForm} label="Job title" name="title" placeholder="Founder & CEO"/><Field form={form} setForm={setForm} label="Company" name="company" placeholder="Company name"/><div className="form-grid"><Field form={form} setForm={setForm} label="Country" name="country" placeholder="USA, UK, UAE"/><Field form={form} setForm={setForm} label="Email" name="email" placeholder="name@company.com" type="email"/></div><Field form={form} setForm={setForm} label="LinkedIn profile URL" name="linkedin" placeholder="https://linkedin.com/in/..."/><div className="form-grid"><label className="field">Outreach status<select value={form.status||'Not contacted'} onChange={e=>setForm({...form,status:e.target.value})}>{stages.map(s=><option key={s}>{s}</option>)}</select></label><Field form={form} setForm={setForm} label="Next follow-up" name="next" type="date"/></div></>}<div className="modal-actions"><button type="button" className="btn ghost" onClick={()=>setModal('')}>Cancel</button><button className="btn primary">Save {modal}</button></div></form></div>}
-  {selected&&<div className="overlay" onClick={()=>setSelected(null)}><div className="modal" onClick={e=>e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">CONTACT DETAILS</span><h2>{selected.name}</h2><p>{selected.title} · {selected.company}</p></div><button className="close" onClick={()=>setSelected(null)}>×</button></div><div className="detail-grid"><div><small>COUNTRY</small><b>{selected.country||'—'}</b></div><div><small>EMAIL</small><b>{selected.email||'Not added'}</b></div><div><small>LINKEDIN</small><b>{selected.linkedin?<a href={selected.linkedin} target="_blank" rel="noreferrer">Open profile ↗</a>:'Not added'}</b></div><div><small>FOLLOW-UP</small><b>{selected.next||'Not scheduled'}</b></div></div><label className="field">Outreach status<select value={selected.status} onChange={e=>{updateStatus(selected.id,e.target.value);setSelected({...selected,status:e.target.value})}}>{stages.map(s=><option key={s}>{s}</option>)}</select></label><div className="modal-actions"><button className="btn ghost" onClick={()=>setSelected(null)}>Close</button></div></div></div>}
-  {toast&&<div className="toast">{toast}</div>}</div>;
+  const updateStage = (id, status) => {
+    save({ ...data, companies: data.companies.map(c => c.id === id ? { ...c, status } : c) });
+  };
+  const importCompanies = e => {
+    const file = e.target.files?.[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = event => {
+      try {
+        const workbook = XLSX.read(event.target.result, { type: 'array' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
+        const key = s => clean(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+        const incoming = rows.map((row, i) => {
+          const normalized = Object.fromEntries(Object.entries(row).map(([k,v]) => [key(k), clean(v)]));
+          const get = (...names) => { for (const name of names) { const value = normalized[key(name)]; if (value) return value; } return ''; };
+          const company = get('Company', 'Company Name', 'Name');
+          if (!company) return null;
+          return normalizeCompany({
+            id: Date.now() + i, name: company, country: get('Region','Country'),
+            website: get('Company Website','Website','URL'),
+            email: get('Support / Contact Email','Contact Email','Email'),
+            careers: get('Hiring / Careers Page','Careers Page'),
+            linkedin: get('Company LinkedIn','LinkedIn'),
+            primaryContact: get('Primary Contact'),
+            primaryContactLink: get('Primary Contact Link'),
+            secondaryContact: get('Secondary Contact'),
+            secondaryContactLink: get('Secondary Contact Link'),
+            outreachAngle: get('Best Outreach Angle','Outreach Angle'),
+            linkedInSent: get('LinkedIn Sent'), emailSent: get('Email Sent'),
+            replied: get('Replied'), callBooked: get('Call Booked'), notes: get('Notes'),
+            status: stageFromRow({
+              'LinkedIn Sent': get('LinkedIn Sent'), 'Email Sent': get('Email Sent'),
+              'Call Booked': get('Call Booked'), Replied: get('Replied')
+            })
+          });
+        }).filter(Boolean);
+        const existing = new Set(data.companies.map(c => clean(c.website).toLowerCase() || clean(c.name).toLowerCase()));
+        const fresh = incoming.filter(c => !existing.has(clean(c.website).toLowerCase() || clean(c.name).toLowerCase()));
+        const merged = data.companies.map(c => {
+          const match = incoming.find(n => clean(n.website).toLowerCase() && clean(n.website).toLowerCase() === clean(c.website).toLowerCase() || clean(n.name).toLowerCase() === clean(c.name).toLowerCase());
+          return match ? normalizeCompany({ ...c, ...match, id: c.id }) : normalizeCompany(c);
+        });
+        save({ ...data, companies: [...merged, ...fresh] });
+        notify(incoming.length + ' companies processed · ' + fresh.length + ' added · ' + (incoming.length - fresh.length) + ' updated/existing');
+      } catch (err) { notify('Could not read this Excel file.'); }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  };
+  const exportCompanies = () => {
+    const rows = data.companies.map(c => ({
+      Company:c.name, Region:c.country, 'Company Website':c.website, 'Support / Contact Email':c.email,
+      'Hiring / Careers Page':c.careers, 'Company LinkedIn':c.linkedin, 'Primary Contact':c.primaryContact,
+      'Primary Contact Link':c.primaryContactLink, 'Secondary Contact':c.secondaryContact,
+      'Secondary Contact Link':c.secondaryContactLink, 'Best Outreach Angle':c.outreachAngle,
+      'LinkedIn Sent':c.linkedInSent, 'Email Sent':c.emailSent, Replied:c.replied,
+      'Call Booked':c.callBooked, Status:c.status, Notes:c.notes
+    }));
+    const sheet = XLSX.utils.json_to_sheet(rows);
+    const book = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(book, sheet, 'Companies');
+    XLSX.writeFile(book, 'founderflow-companies.xlsx');
+  };
+  const nav = ['Dashboard','Companies','Pipeline'];
+  return <div className="app">
+    <aside className="sidebar">
+      <div className="brand"><div className="brand-mark">F</div><div><b>FounderFlow</b><small>OUTREACH CRM</small></div></div>
+      <div className="workspace">WORKSPACE <span>PERSONAL</span></div>
+      <nav>{nav.map((n,i)=><button key={n} className={page===n?'active':''} onClick={()=>setPage(n)}><span className="nav-icon">{['◫','▦','⇄'][i]}</span>{n}</button>)}</nav>
+      <div className="sidebar-bottom"><div className="avatar">ND</div><div><b>My workspace</b><small>Company outreach</small></div></div>
+    </aside>
+    <main className="main">
+      <header><div><span className="eyebrow">YOUR OUTREACH WORKSPACE</span><h1>{page}</h1></div><div className="header-actions">{page==='Companies' && <button className="btn ghost" onClick={exportCompanies}>↓ Export Excel</button>}{page!=='Pipeline' && <button className="btn primary" onClick={()=>{setForm({});setModal(true)}}>＋ Add company</button>}</div></header>
+      {page==='Dashboard' && <>
+        <section className="welcome"><div><span className="eyebrow light">FOUNDER & LEADERSHIP OUTREACH</span><h2>Build meaningful<br/>founder relationships.</h2><p>Manage target companies and move each relationship through your outreach pipeline.</p></div><div className="welcome-art"><div className="orbit o1"></div><div className="orbit o2"></div><div className="orbit-core">✳</div><span className="orb-tag">CONNECT · BUILD · GROW</span></div></section>
+        <section className="stats">{[['Target companies',data.companies.length,'Companies you selected'],['LinkedIn sent',count('LinkedIn sent'),'First touch on LinkedIn'],['Email sent',count('Email sent'),'Email outreach completed'],['Replies',count('Replied'),'Conversations started']].map(([label,value,sub])=><div className="stat" key={label}><span>{label}</span><strong>{value}</strong><small>{sub}</small></div>)}</section>
+        <section className="panel"><div className="panel-head"><div><h3>Company pipeline</h3><p>Move companies through each outreach step</p></div><button className="text-btn" onClick={()=>setPage('Pipeline')}>Open pipeline ↗</button></div><div className="pipeline-list">{stages.slice(0,6).map(s=><div className="pipeline-row" key={s}><span className="stage-dot"/><span>{s}</span><div className="bar"><i style={{width:(data.companies.length?count(s)/data.companies.length*100:0)+'%'}}/></div><b>{count(s)}</b></div>)}</div></section>
+      </>}
+      {page==='Companies' && <section className="panel"><div className="panel-head"><div><h3>Your selected companies</h3><p>Every company and its founder, CEO, hiring and leadership contacts are kept together here</p></div><div className="table-tools"><input className="search" placeholder="Search companies or people..." value={query} onChange={e=>setQuery(e.target.value)}/><label className="btn ghost upload">↑ Import Excel<input type="file" accept=".xlsx,.xls,.csv" onChange={importCompanies}/></label><span className="count-pill">{data.companies.length} companies</span></div></div>
+        <div className="company-list">{companies.map(c=><article className="company-card" key={c.id}>
+          <div className="company-top"><div><h3>{c.name}</h3><span className="company-region">{c.country || 'Region not set'}</span></div><select className="status-select" aria-label={'Outreach status for '+c.name} value={stages.includes(c.status)?c.status:'Not contacted'} onChange={e=>updateStage(c.id,e.target.value)}>{stages.map(s=><option key={s}>{s}</option>)}</select></div>
+          <div className="company-links"><span>Website: <ExternalLink href={c.website} children={c.website || '—'}/></span><span>Company LinkedIn: <ExternalLink href={c.linkedin} children={c.linkedin ? 'Open company profile' : '—'}/></span><span>Careers: <ExternalLink href={c.careers} children={c.careers ? 'Hiring page' : '—'}/></span><span>Email: {c.email ? <a href={'mailto:'+c.email}>{c.email}</a> : <span className="muted">—</span>}</span></div>
+          <div className="company-contacts"><div className="person-block"><b>Primary contact</b><span>{c.primaryContact || 'Not provided'}</span><ExternalLink href={c.primaryContactLink} children={c.primaryContactLink ? 'Open contact profile' : 'No profile link'}/></div><div className="person-block"><b>Secondary contact</b><span>{c.secondaryContact || 'Not provided'}</span><ExternalLink href={c.secondaryContactLink} children={c.secondaryContactLink ? 'Open contact profile' : 'No profile link'}/></div></div>
+          <div className="company-bottom"><div><b>Outreach angle</b><span>{c.outreachAngle || '—'}</span></div><div><b>Outreach tracking</b><span>LinkedIn: {c.linkedInSent || 'No'} · Email: {c.emailSent || 'No'} · Replied: {c.replied || 'No'} · Call: {c.callBooked || 'No'}</span></div>{c.notes && <div><b>Notes</b><span>{c.notes}</span></div>}</div>
+        </article>)}{!companies.length&&<div className="empty">No companies match your search. Import your Excel list or add a company.</div>}</div>
+      </section>}
+      {page==='Pipeline' && <section className="pipeline-board-wrap"><div className="panel-head"><div><h3>Company outreach pipeline</h3><p>Drag a company card between columns to update its outreach status.</p></div></div><div className="kanban">{stages.map(s=><section className={'kanban-col '+(dragging?'drag-ready':'')} key={s} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();if(dragging!==null){updateStage(dragging,s);setDragging(null);}}}><div className="kanban-title">{s}<span>{count(s)}</span></div>{data.companies.filter(c=>c.status===s).map(c=><article className="kanban-card" key={c.id} draggable onDragStart={()=>setDragging(c.id)} onDragEnd={()=>setDragging(null)}><div className="drag-handle">⠿ Drag</div><b>{c.name}</b><small>{c.country}</small><p>{c.primaryContact || c.secondaryContact || 'No contact added'}</p><div className="card-links">{c.primaryContactLink && <ExternalLink href={c.primaryContactLink} children="Contact ↗"/>}{c.linkedin && <ExternalLink href={c.linkedin} children="Company ↗"/>}</div><select value={c.status} onChange={e=>updateStage(c.id,e.target.value)} aria-label={'Move '+c.name}>{stages.map(x=><option key={x}>{x}</option>)}</select></article>)}</section>)}</div></section>}
+      <footer>FounderFlow CRM <span>Private workspace · Data saved in this browser</span></footer>
+    </main>
+    {modal && <div className="overlay" onClick={()=>setModal(false)}><form className="modal" onClick={e=>e.stopPropagation()} onSubmit={addCompany}><div className="modal-head"><div><span className="eyebrow">ADD TO YOUR WORKSPACE</span><h2>New company</h2></div><button type="button" className="close" onClick={()=>setModal(false)}>×</button></div><Field form={form} setForm={setForm} label="Company name" name="name" placeholder="e.g. Acme Technologies"/><Field form={form} setForm={setForm} label="Region" name="country" placeholder="US, UK, UAE..."/><Field form={form} setForm={setForm} label="Company website" name="website" placeholder="https://"/><Field form={form} setForm={setForm} label="Company LinkedIn" name="linkedin" placeholder="https://linkedin.com/company/..."/><Field form={form} setForm={setForm} label="Primary founder / CEO / hiring contact" name="primaryContact" placeholder="Name and role"/><Field form={form} setForm={setForm} label="Primary contact LinkedIn" name="primaryContactLink" placeholder="https://linkedin.com/in/..."/><Field form={form} setForm={setForm} label="Secondary contact" name="secondaryContact" placeholder="Name and role"/><Field form={form} setForm={setForm} label="Secondary contact LinkedIn" name="secondaryContactLink" placeholder="https://linkedin.com/in/..."/><Field form={form} setForm={setForm} label="Support / contact email" name="email" placeholder="hello@company.com" type="email"/><Field form={form} setForm={setForm} label="Hiring / careers page" name="careers" placeholder="https://..."/><Field form={form} setForm={setForm} label="Best outreach angle" name="outreachAngle" placeholder="Why you want to reach out"/><div className="modal-actions"><button type="button" className="btn ghost" onClick={()=>setModal(false)}>Cancel</button><button className="btn primary">Save company</button></div></form></div>}
+    {toast&&<div className="toast">{toast}</div>}
+  </div>;
 }
-function Stat({label,value,sub}){return <div className="stat"><span>{label}</span><strong>{value}</strong><small>{sub}</small></div>}
-function Empty(){return <div className="empty">Nothing here yet. Add your first record to get started.</div>}
 createRoot(document.getElementById('root')).render(<App/>);
