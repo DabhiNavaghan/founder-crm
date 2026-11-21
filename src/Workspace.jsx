@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Building2, Users, Send, CalendarClock, BarChart3, Settings, Plus, Upload, Download, Search, Linkedin, Mail, Globe2, CheckCircle2, Clock3, Sparkles, Copy, X, ShieldCheck, ArrowRight, Menu, Zap } from 'lucide-react';
+import { Building2, Users, Send, CalendarClock, BarChart3, Settings, Upload, Search, Linkedin, Mail, Globe2, CheckCircle2, Sparkles, Copy, X, ShieldCheck, ArrowRight, Menu, Zap } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { UserButton } from '@clerk/react';
 
@@ -14,7 +14,7 @@ function scoreContact(c, company) {
 }
 export function Workspace({supabase,user,getToken}) {
  const [data,setData]=useState(EMPTY),[page,setPage]=useState('overview'),[loading,setLoading]=useState(true),[error,setError]=useState('');
- const [search,setSearch]=useState(''),[modal,setModal]=useState(''),[form,setForm]=useState({}),[toast,setToast]=useState(''),[mobile,setMobile]=useState(false);
+ const [search,setSearch]=useState(''),[toast,setToast]=useState(''),[mobile,setMobile]=useState(false);
  const [selected,setSelected]=useState(''),[context,setContext]=useState(''),[channel,setChannel]=useState('LinkedIn'),[variant,setVariant]=useState('A'),[draft,setDraft]=useState(null),[busy,setBusy]=useState(false);
  const notify=m=>{setToast(m);window.setTimeout(()=>setToast(''),3000);};
  const refresh=async()=>{
@@ -37,37 +37,44 @@ export function Workspace({supabase,user,getToken}) {
   setData(p=>key==='profile'?{...p,profile:saved}:{...p,[key]:[saved,...p[key].filter(x=>x.id!==saved.id)]});
   return saved;
  };
- const addCompany=async e=>{e.preventDefault();if(!form.name?.trim())return;const r=await save('companies',{...form,name:form.name.trim(),owner_id:user.id});if(r){setModal('');setForm({});notify('Company saved');}};
- const addContact=async e=>{
-  e.preventDefault();if(!form.first_name||!form.company_id)return;
-  const company=companyFor(form.company_id);
-  const row={...form,owner_id:user.id,quality_score:scoreContact(form,company)};
-  const r=await save('contacts',row);if(r){setModal('');setForm({});notify('Contact saved');}
- };
+ const canImport=(user?.primaryEmailAddress?.emailAddress||'').toLowerCase()==='dabhinavaghan1@gmail.com';
  const importFile=e=>{
+  if(!canImport){notify('Excel import is restricted to the authorised account.');return;}
   const file=e.target.files?.[0];if(!file)return;
   const reader=new FileReader();
   reader.onload=async ev=>{
-   const wb=XLSX.read(ev.target.result,{type:'array'});const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:''});
-   let n=0;
-   for(const r of rows){
-    const name=r.Company||r['Company Name']||r.Name;if(!name)continue;
-    const website=r['Company Website']||r.Website||'';
-    const duplicate=data.companies.find(c=>(website&&c.website?.toLowerCase()===String(website).toLowerCase())||c.name.toLowerCase()===String(name).toLowerCase());
-    const row={owner_id:user.id,name,website,country:r.Region||r.Country||'',contact_email:r['Support / Contact Email']||r.Email||'',careers_url:r['Hiring / Careers Page']||'',linkedin_url:r['Company LinkedIn']||'',outreach_angle:r['Best Outreach Angle']||'',notes:r.Notes||''};
-    if(duplicate)await save('companies',{...duplicate,...row});else await save('companies',row);
-    n++;
-   }
-   notify('Imported or updated '+n+' companies');
+   try{
+    const wb=XLSX.read(ev.target.result,{type:'array'});
+    const rows=wb.SheetNames.flatMap(sheet=>XLSX.utils.sheet_to_json(wb.Sheets[sheet],{defval:''}));
+    let companyCount=0,contactCount=0;
+    const knownCompanies=[...data.companies],knownContacts=[...data.contacts];
+    for(const r of rows){
+     const name=String(r.Company||r['Company Name']||r.Name||'').trim();if(!name)continue;
+     const website=String(r['Company Website']||r.Website||'').trim();
+     const duplicate=knownCompanies.find(c=>(website&&c.website?.toLowerCase()===website.toLowerCase())||c.name?.toLowerCase()===name.toLowerCase());
+     const companyRow={owner_id:user.id,name,website,country:r.Region||r.Country||'',contact_email:r['Support / Contact Email']||r.Email||'',careers_url:r['Hiring / Careers Page']||'',linkedin_url:r['Company LinkedIn']||'',outreach_angle:r['Best Outreach Angle']||'',notes:r.Notes||''};
+     const company=await save('companies',duplicate?{...duplicate,...companyRow}:companyRow);
+     if(!company)continue;
+     if(!duplicate)companyCount++;
+     knownCompanies.push(company);
+     const candidates=[
+      {name:r['Primary Contact'],url:r['Primary Contact Link'],role:r['Primary Contact Role']||'Founder / Decision Maker'},
+      {name:r['Secondary Contact'],url:r['Secondary Contact Link'],role:r['Secondary Contact Role']||'Decision Maker'}
+     ];
+     for(const candidate of candidates){
+      const fullName=String(candidate.name||'').trim();if(!fullName)continue;
+      const parts=fullName.split(/\s+/);
+      const linkedin=String(candidate.url||'').trim();
+      const existing=knownContacts.find(c=>c.company_id===company.id&&((linkedin&&c.linkedin_url?.toLowerCase()===linkedin.toLowerCase())||((c.first_name+' '+(c.last_name||'')).trim().toLowerCase()===fullName.toLowerCase())));
+      if(existing)continue;
+      const person=await save('contacts',{owner_id:user.id,company_id:company.id,first_name:parts[0],last_name:parts.slice(1).join(' '),role:candidate.role,linkedin_url:linkedin,priority:Number(r.Priority)||3,notes:r.Notes||'',quality_score:scoreContact({first_name:parts[0],last_name:parts.slice(1).join(' '),role:candidate.role,linkedin_url:linkedin},company)});
+      if(person){knownContacts.push(person);contactCount++;}
+     }
+    }
+    notify('Imported '+companyCount+' new companies and '+contactCount+' contacts. All records are private to your account.');
+   }catch(err){notify('Excel import failed: '+err.message);}
   };
   reader.readAsArrayBuffer(file);e.target.value='';
- };
- const exportFile=()=>{
-  const wb=XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(data.companies),'Companies');
-  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(data.contacts),'Contacts');
-  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(data.messages),'Messages');
-  XLSX.writeFile(wb,'founderflow-export.xlsx');
  };
  const recordEvent=async(contact,event_type,extra={})=>{
   if(!contact)return;
@@ -133,12 +140,12 @@ export function Workspace({supabase,user,getToken}) {
      <div className="content-grid"><section className="surface"><div className="section-head"><div><span className="eyebrow">YOUR PIPELINE</span><h2>Relationship snapshot</h2></div><button className="subtle-link" onClick={()=>setPage('companies')}>All companies <ArrowRight size={14}/></button></div>{['researching','ready','contacted','replied','meeting_booked'].map((s,i)=><div className="pipeline-step" key={s}><span className="step-mark">{i+1}</span><div><b>{['Researching','Ready to contact','Contacted','Replied','Meeting booked'][i]}</b><small>{i<2?data.companies.filter(c=>c.status===s).length:data.contacts.filter(c=>c.status===s).length} records</small></div><ArrowRight size={15}/></div>)}</section><section className="surface next-card"><span className="eyebrow">TODAY’S FOCUS</span><div className="sparkle-icon"><Sparkles size={21}/></div><h2>{queue.length} contacts<br/>in your priority queue.</h2><p>Warm contacts, higher-priority people and due follow-ups appear first.</p><button className="btn btn-light" onClick={()=>setPage('queue')}>Open daily queue <ArrowRight size={15}/></button></section></div>
     </>}
     {page==='companies'&&<>
-     <div className="page-title-row"><div><span className="eyebrow">YOUR TARGET UNIVERSE</span><h1>Companies</h1><p>Store company research and the reasons you want to connect.</p></div><div className="action-row"><label className="btn btn-light"><Upload size={15}/> Import Excel<input hidden type="file" accept=".xlsx,.xls,.csv" onChange={importFile}/></label><button className="btn btn-dark" onClick={()=>{setForm({priority:3});setModal('company')}}><Plus size={16}/> Add company</button></div></div>
-     <div className="surface"><div className="table-toolbar"><div className="searchbox"><Search size={16}/><input placeholder="Search companies…" value={search} onChange={e=>setSearch(e.target.value)}/></div><button className="subtle-link" onClick={exportFile}><Download size={15}/> Export</button></div><div className="company-table">{companyFiltered.map(c=><div className="company-row" key={c.id}><div className="company-symbol">{(c.name||'?').slice(0,1).toUpperCase()}</div><div className="company-name"><b>{c.name}</b><small>{c.website||c.country||'Add company details'}</small></div><div className="company-type">{c.sector||'Sector not set'}</div><div className="company-contact">Priority {c.priority||3}</div><div className="company-links">{c.website&&<a href={c.website.startsWith('http')?c.website:'https://'+c.website} target="_blank" rel="noreferrer"><Globe2 size={15}/></a>}{c.linkedin_url&&<a href={c.linkedin_url} target="_blank" rel="noreferrer"><Linkedin size={15}/></a>}</div></div>)}{!companyFiltered.length&&<div className="empty-state"><Building2 size={25}/><b>No companies yet</b><span>Import your existing list or add your first target company.</span></div>}</div></div>
+     <div className="page-title-row"><div><span className="eyebrow">YOUR TARGET UNIVERSE</span><h1>Companies</h1><p>Store company research and the reasons you want to connect.</p></div>{canImport&&<div className="action-row"><label className="btn btn-light"><Upload size={15}/> Import Excel<input hidden type="file" accept=".xlsx,.xls,.csv" onChange={importFile}/></label></div>}</div>
+     <div className="surface"><div className="table-toolbar"><div className="searchbox"><Search size={16}/><input placeholder="Search companies…" value={search} onChange={e=>setSearch(e.target.value)}/></div></div><div className="company-table">{companyFiltered.map(c=><div className="company-row" key={c.id}><div className="company-symbol">{(c.name||'?').slice(0,1).toUpperCase()}</div><div className="company-name"><b>{c.name}</b><small>{c.website||c.country||'Add company details'}</small></div><div className="company-type">{c.sector||'Sector not set'}</div><div className="company-contact">Priority {c.priority||3}</div><div className="company-links">{c.website&&<a href={c.website.startsWith('http')?c.website:'https://'+c.website} target="_blank" rel="noreferrer"><Globe2 size={15}/></a>}{c.linkedin_url&&<a href={c.linkedin_url} target="_blank" rel="noreferrer"><Linkedin size={15}/></a>}</div></div>)}{!companyFiltered.length&&<div className="empty-state"><Building2 size={25}/><b>No companies yet</b><span>Company records will appear here after the authorised Excel import.</span></div>}</div></div>
     </>}
     {page==='contacts'&&<>
-     <div className="page-title-row"><div><span className="eyebrow">PEOPLE BEFORE PIPELINES</span><h1>Contacts</h1><p>Founders, CEOs, CTOs, product leaders and hiring decision makers.</p></div><button className="btn btn-dark" onClick={()=>{setForm({priority:3});setModal('contact')}}><Plus size={16}/> Add contact</button></div>
-     <div className="surface"><div className="company-table">{data.contacts.map(c=>{const company=companyFor(c.company_id),quality=scoreContact(c,company);return <div className="company-row" key={c.id}><div className="company-symbol"><Users size={17}/></div><div className="company-name"><b>{c.first_name} {c.last_name||''}</b><small>{c.role||'Role not set'} · {company?.name||'Company'}</small></div><div className="company-type">Quality {quality}/100</div><div className="company-contact">{c.email_verified?'Email verified':c.email?'Email unverified':'No email'}</div><div className="company-links">{c.linkedin_url&&<a href={c.linkedin_url} target="_blank" rel="noreferrer"><Linkedin size={15}/></a>}{c.email&&<a href={'mailto:'+c.email}><Mail size={15}/></a>}</div></div>;})}{!data.contacts.length&&<div className="empty-state"><Users size={25}/><b>Your network starts here</b><span>Add founders and decision makers to your target companies.</span></div>}</div></div>
+     <div className="page-title-row"><div><span className="eyebrow">PEOPLE BEFORE PIPELINES</span><h1>Contacts</h1><p>Founders, CEOs, CTOs, product leaders and hiring decision makers.</p></div></div>
+     <div className="surface"><div className="company-table">{data.contacts.map(c=>{const company=companyFor(c.company_id),quality=scoreContact(c,company);return <div className="company-row" key={c.id}><div className="company-symbol"><Users size={17}/></div><div className="company-name"><b>{c.first_name} {c.last_name||''}</b><small>{c.role||'Role not set'} · {company?.name||'Company'}</small></div><div className="company-type">Quality {quality}/100</div><div className="company-contact">{c.email_verified?'Email verified':c.email?'Email unverified':'No email'}</div><div className="company-links">{c.linkedin_url&&<a href={c.linkedin_url} target="_blank" rel="noreferrer"><Linkedin size={15}/></a>}{c.email&&<a href={'mailto:'+c.email}><Mail size={15}/></a>}</div></div>;})}{!data.contacts.length&&<div className="empty-state"><Users size={25}/><b>Your network starts here</b><span>Contacts are created automatically from the authorised Excel import.</span></div>}</div></div>
     </>}
     {page==='outreach'&&<>
      <div className="page-title-row"><div><span className="eyebrow">RELEVANCE IS YOUR ADVANTAGE</span><h1>Message studio</h1><p>Use real research to create and save message variants.</p></div></div>
@@ -155,7 +162,7 @@ export function Workspace({supabase,user,getToken}) {
     </>}
     {page==='queue'&&<>
      <div className="page-title-row"><div><span className="eyebrow">A LITTLE PROGRESS, EVERY DAY</span><h1>Daily queue</h1><p>Your 20 highest-priority contacts, sorted by follow-up urgency and warmth.</p></div><span className="queue-badge"><Zap size={15}/> {queue.length} / 20</span></div>
-     <div className="surface">{queue.map(c=><div className="company-row" key={c.id}><div className="company-symbol">{c.first_name?.slice(0,1)||'?'}</div><div className="company-name"><b>{c.first_name} {c.last_name||''} · {c._company?.name||'Company'}</b><small>{c.role||'Decision maker'} · {c.next_follow_up_at?'Follow up '+new Date(c.next_follow_up_at).toLocaleDateString():'No follow-up scheduled'} · Priority {c.priority||3}</small></div><div className="company-links"><button className="subtle-link" onClick={()=>{setSelected(c.id);setPage('outreach')}}>Prepare message <ArrowRight size={14}/></button><button className="subtle-link" onClick={()=>recordEvent(c,'replied')}>Log reply</button><button className="subtle-link" onClick={()=>recordEvent(c,'meeting')}>Meeting booked</button></div></div>)}{!queue.length&&<div className="empty-state"><CalendarClock size={26}/><b>Your queue is empty</b><span>Add contacts and set priority or follow-up dates to build your daily list.</span><button className="btn btn-dark" onClick={()=>setPage('contacts')}>Add contacts</button></div>}</div>
+     <div className="surface">{queue.map(c=><div className="company-row" key={c.id}><div className="company-symbol">{c.first_name?.slice(0,1)||'?'}</div><div className="company-name"><b>{c.first_name} {c.last_name||''} · {c._company?.name||'Company'}</b><small>{c.role||'Decision maker'} · {c.next_follow_up_at?'Follow up '+new Date(c.next_follow_up_at).toLocaleDateString():'No follow-up scheduled'} · Priority {c.priority||3}</small></div><div className="company-links"><button className="subtle-link" onClick={()=>{setSelected(c.id);setPage('outreach')}}>Prepare message <ArrowRight size={14}/></button><button className="subtle-link" onClick={()=>recordEvent(c,'replied')}>Log reply</button><button className="subtle-link" onClick={()=>recordEvent(c,'meeting')}>Meeting booked</button></div></div>)}{!queue.length&&<div className="empty-state"><CalendarClock size={26}/><b>Your queue is empty</b><span>Add contacts and set priority or follow-up dates to build your daily list.</span></div>}</div>
     </>}
     {page==='analytics'&&<>
      <div className="page-title-row"><div><span className="eyebrow">LEARN WHAT OPENS DOORS</span><h1>Analytics</h1><p>Track real outcomes logged from your manual outreach.</p></div></div>
@@ -167,13 +174,6 @@ export function Workspace({supabase,user,getToken}) {
    </div>
    <footer>FOUNDERFLOW <span>Built for thoughtful outreach · Your data stays yours</span></footer>
   </main>
-  {modal&&<div className="modal-backdrop" onClick={()=>setModal('')}><form className="modal-card" onSubmit={modal==='company'?addCompany:addContact} onClick={e=>e.stopPropagation()}><div className="modal-title"><h2>{modal==='company'?'Add a company':'Add a decision maker'}</h2><button type="button" onClick={()=>setModal('')}><X size={18}/></button></div>
-   {modal==='contact'&&<label className="form-field">Company<select required value={form.company_id||''} onChange={e=>setForm(p=>({...p,company_id:e.target.value}))}><option value="">Select company</option>{data.companies.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></label>}
-   {(modal==='company'?companyFormFields:contactFormFields).map(([k,l])=><label className="form-field" key={k}>{l}{k==='next_follow_up_at'?<input type="date" value={form[k]?.slice(0,10)||''} onChange={e=>setForm(p=>({...p,[k]:e.target.value?new Date(e.target.value).toISOString():null}))}/>:k==='description'||k==='recent_news'||k==='outreach_angle'||k==='notes'?<textarea rows={2} value={form[k]||''} onChange={e=>setForm(p=>({...p,[k]:e.target.value}))}/>:k==='priority'?<select value={form[k]||3} onChange={e=>setForm(p=>({...p,[k]:Number(e.target.value)}))}>{[1,2,3,4,5].map(n=><option key={n} value={n}>{n}</option>)}</select>:<input required={k==='name'||k==='first_name'} value={form[k]||''} onChange={e=>setForm(p=>({...p,[k]:e.target.value}))}/>}</label>)}
-   {modal==='contact'&&<label className="form-field"><input type="checkbox" checked={Boolean(form.warm_contact)} onChange={e=>setForm(p=>({...p,warm_contact:e.target.checked}))}/> Warm contact</label>}
-   {modal==='contact'&&<label className="form-field"><input type="checkbox" checked={Boolean(form.email_verified)} onChange={e=>setForm(p=>({...p,email_verified:e.target.checked}))}/> I have verified this email address</label>}
-   <button className="btn btn-dark" type="submit">Save to workspace <ArrowRight size={15}/></button>
-  </form></div>}
   {toast&&<div className="toast">{toast}</div>}
  </div>;
 }
