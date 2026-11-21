@@ -16,7 +16,7 @@ function AppShell() {
  const {getToken,isLoaded,isSignedIn}=useAuth();
  const {user}=useUser();
  useEffect(()=>{window.__founderflowToken=()=>getToken();},[getToken]);
- if(!isLoaded)return <div className="boot">FounderFlow <span>Loading workspace…</span></div>;
+ if(!isLoaded)return <Landing/>;
  if(!isSignedIn)return <Landing/>;
  if(!supabaseReady)return <div className="setup-screen"><div className="logo-mark">F</div><h1>Your workspace is being prepared.</h1><p>FounderFlow is waiting for its database connection.</p><UserButton/></div>;
  return <Workspace supabase={supabase} user={user} getToken={getToken}/>;
