@@ -121,7 +121,7 @@ export function Workspace({supabase,user,getToken}) {
   <aside className={'sidebar '+(mobile?'show':'')}>
    <div className="side-brand"><div className="logo-mark">F</div><span>founderflow<small>RELATIONSHIP OS</small></span><button className="mobile-close" onClick={()=>setMobile(false)}><X/></button></div>
    <div className="side-label">WORKSPACE</div><nav>{NAV.map(item=><button key={item.id} className={page===item.id?'nav-active':''} onClick={()=>{setPage(item.id);setMobile(false)}}><item.icon size={17}/>{item.label}{item.id==='queue'&&<b className="nav-count">{queue.length}</b>}</button>)}</nav>
-   <div className="sidebar-bottom"><div className="secure-pill"><ShieldCheck size={15}/> Your workspace is private</div><div className="user-meta"><div><b>{user?.fullName||user?.firstName||'Your workspace'}</b><small>{user?.primaryEmailAddress?.emailAddress}</small></div><UserButton afterSignOutUrl="/"/></div></div>
+   <div className="sidebar-bottom"><div className="secure-pill"><ShieldCheck size={15}/> Your workspace is private</div><div className="user-meta"><div><b>{user?.fullName||user?.firstName||'Your workspace'}</b><small>{user?.primaryEmailAddress?.emailAddress}</small></div><UserButton/></div></div>
   </aside>
   <main className="main-area">
    <header className="topbar"><button className="mobile-menu" onClick={()=>setMobile(true)}><Menu/></button><div className="crumb">Workspace <span>/</span> {pageTitle}</div><div className="top-actions"><span className="live-dot">Cloud workspace</span></div></header>
