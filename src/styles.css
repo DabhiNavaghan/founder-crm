@@ -1,0 +1,72 @@
+/* Founder Outreach CRM styles */
+Build a modern, responsive web application called “Founder Outreach CRM”.
+
+It is a private, single-user tool for a senior mobile application developer and technical solution consultant who wants to reach founders and senior product/engineering leaders at venture-backed companies in the United States, United Kingdom, and UAE.
+
+The user offers:
+- Lead Flutter / cross-platform mobile application development
+- Web application development
+- MVP and product-launch delivery
+- Technical solution consulting
+- Fractional lead engineer / mobile team leadership
+
+The user’s positioning is:
+“I lead mobile application development and contribute to product strategy—helping companies build, improve, and ship high-quality mobile and web products faster.”
+
+The goal of the tool is to help the user research companies, identify founder-level and senior product/engineering contacts, create short personalized outreach messages, track outreach progress with checkboxes, schedule follow-ups, and measure reply and meeting conversion rates.
+
+Important compliance rule:
+Do not build LinkedIn scraping, automatic LinkedIn connection requests, automatic LinkedIn messages, or bulk automated LinkedIn activity. LinkedIn outreach must be a guided manual workflow: the tool opens or links to the correct LinkedIn profile, prepares a personalized message, and the user manually copies/sends it. The tool records the action after the user confirms it.
+
+For email, support compliant B2B outreach:
+- Use only publicly available or verified business emails.
+- Clearly label email status as “Verified”, “Pattern-based”, or “Unverified”.
+- Include an unsubscribe/opt-out link in emails.
+- Maintain a global suppression list.
+- Do not send emails automatically without user approval.
+
+## User
+
+There is one primary user: the business owner.
+
+They should be able to:
+- Add companies manually or import them from CSV.
+- Add contacts manually or import them from CSV.
+- Search, filter, sort, and prioritize companies and contacts.
+- Generate personalized outreach messages using AI.
+- Copy a LinkedIn connection note, LinkedIn follow-up message, or email with one click.
+- Mark outreach actions as complete using checkboxes.
+- Track follow-ups and see overdue tasks.
+- View outreach performance on a dashboard.
+
+## Core screens
+
+Build these screens:
+
+1. Dashboard
+- Total companies
+- Total contacts
+- Contacts by country: US, UK, UAE
+- Outreach sent
+- Replies received
+- Meetings booked
+- Proposals sent
+- Wins
+- Overdue follow-ups
+- Top-performing message templates
+- Pipeline funnel: Not contacted, LinkedIn sent, Connected, Email sent, Replied, Call booked, Proposal sent, Won, Not a fit
+
+2. Companies
+- Table/list view with company name, country, website, sector, funding stage, employee count, priority, LinkedIn company URL, support email, careers URL, product notes, and status.
+- Filters: country, sector, funding stage, priority, status, employee count.
+- Search by company name.
+- Add/edit/delete company.
+- Company detail page showing all linked contacts, outreach activity, notes, and next action.
+- CSV import and export.
+
+3. Contacts
+- Table/list view with name, company, job title, seniority, country, LinkedIn URL, email, email status, portfolio URL, phone optional, notes, outreach status, and next follow-up date.
+- Filters: company, country, role, seniority, email status, outreach status, priority.
+- Add/edit/delete contact.
+- Contact detail page showing company information, message history, activity timeline, notes, and next action.
+- CSV import and export.
