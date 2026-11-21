@@ -52,7 +52,7 @@ function App() {
     setModal(false); setForm({}); notify('Company added');
   };
   const updateStage = (id, status) => {
-    save({ ...data, companies: data.companies.map(c => c.id === id ? { ...c, status } : c) });
+    save({ ...data, companies: data.companies.map(c => c.id === id ? { ...c, status, linkedInSent: ['LinkedIn sent','Connected','Replied','Call booked','Won'].includes(status) ? 'Yes' : (c.linkedInSent || 'No'), emailSent: ['Email sent','Replied','Call booked','Won'].includes(status) ? 'Yes' : (c.emailSent || 'No'), replied: ['Replied','Call booked','Won'].includes(status) ? 'Yes' : (c.replied || 'No'), callBooked: ['Call booked','Won'].includes(status) ? 'Yes' : (c.callBooked || 'No') } : c) });
   };
   const importCompanies = e => {
     const file = e.target.files?.[0]; if (!file) return;
