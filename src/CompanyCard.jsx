@@ -5,7 +5,7 @@ const href = url => (/^https?:\/\//i.test(url) ? url : 'https://' + url);
 const host = url => { try { return new URL(href(url)).hostname.replace(/^www\./, ''); } catch { return url; } };
 const peopleSearch = keywords => 'https://www.linkedin.com/search/results/people/?keywords=' + encodeURIComponent(keywords);
 const PRIORITY = { 5: 'High priority', 4: 'High priority', 3: 'Medium priority', 2: 'Low priority', 1: 'Low priority' };
-const FIND_ROLES = [['Founder / CEO', 'Founder CEO'], ['CTO / Engineering', 'CTO'], ['Head of Product', 'Head of Product']];
+const FIND_ROLES = [['Founder / CEO', 'Founder CEO'], ['CTO / Engineering', 'CTO'], ['Head of Product', 'Head of Product'], ['Engineers', 'Engineer'], ['Recruiter / Talent', 'Recruiter']];
 
 function Action({ url, icon: Icon, children, primary }) {
   return <a className={'cc-action' + (primary ? ' cc-action-primary' : '')} href={url} target={url.startsWith('mailto:') ? undefined : '_blank'} rel="noreferrer"><Icon size={13} />{children}</a>;
@@ -63,9 +63,10 @@ export function CompanyCard({ company: c, contacts, onMessage }) {
           </div>
         </div>;
       })}
-      {!people.length && <div className="cc-actions">
+      {people.length > 0 && <span className="cc-label">Find more people on LinkedIn</span>}
+      <div className="cc-actions">
         {FIND_ROLES.map(([label, keywords]) => <Action key={label} url={peopleSearch(c.name + ' ' + keywords)} icon={Search}>Find {label}</Action>)}
-      </div>}
+      </div>
     </div>
   </article>;
 }
