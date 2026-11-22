@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Building2, Users, Send, CalendarClock, BarChart3, Settings, Upload, Search, Linkedin, Mail, Globe2, CheckCircle2, Sparkles, Copy, X, ShieldCheck, ArrowRight, Menu, Zap } from 'lucide-react';
 import { UserButton } from '@clerk/react';
 import { parseWorkbook } from './importCompanies.js';
+import { CompanyCard } from './CompanyCard.jsx';
 
 const EMPTY = {companies:[],contacts:[],messages:[],events:[],profile:null};
 const NAV = [{id:'overview',label:'Overview',icon:Building2},{id:'companies',label:'Companies',icon:Building2},{id:'contacts',label:'Contacts',icon:Users},{id:'outreach',label:'Message studio',icon:Send},{id:'queue',label:'Daily queue',icon:CalendarClock},{id:'analytics',label:'Analytics',icon:BarChart3},{id:'profile',label:'My profile',icon:Settings}];
@@ -122,7 +123,6 @@ export function Workspace({supabase,user,getToken}) {
   await recordEvent(person,'sent',{channel,variant,message_id:message?.id||null,followup:new Date(Date.now()+4*86400000).toISOString()});
  };
  const copyDraft=async()=>{if(!draft)return;navigator.clipboard?.writeText((draft.subject?'Subject: '+draft.subject+'\n\n':'')+draft.message);notify('Message copied');};
- const companyFiltered=data.companies.filter(c=>(c.name+' '+(c.website||'')+' '+(c.country||'')+' '+(c.sector||'')).toLowerCase().includes(search.toLowerCase()));
  const queue=useMemo(()=>{
   return [...data.contacts].map(c=>({...c,_company:companyFor(c.company_id)})).sort((a,b)=>{
    const dueA=a.next_follow_up_at?new Date(a.next_follow_up_at).getTime():0;
@@ -131,7 +131,8 @@ export function Workspace({supabase,user,getToken}) {
    return (overdueB-overdueA)||((b.warm_contact?1:0)-(a.warm_contact?1:0))||((b.priority||3)-(a.priority||3))||(dueA-dueB);
   }).slice(0,20);
  },[data.contacts,data.companies]);
- const contactCompanyIds=useMemo(()=>new Set(data.contacts.map(c=>c.company_id)),[data.contacts]);
+ const contactsByCompany=useMemo(()=>{const m=new Map();for(const c of data.contacts){if(!m.has(c.company_id))m.set(c.company_id,[]);m.get(c.company_id).push(c);}return m;},[data.contacts]);
+ const companyFiltered=useMemo(()=>{const q=search.trim().toLowerCase();const list=[...data.companies].sort((a,b)=>((b.priority||3)-(a.priority||3))||a.name.localeCompare(b.name));if(!q)return list;return list.filter(c=>[c.name,c.website,c.country,c.sector,c.outreach_angle,...(contactsByCompany.get(c.id)||[]).flatMap(p=>[p.first_name,p.last_name,p.role])].filter(Boolean).join(' ').toLowerCase().includes(q));},[data.companies,contactsByCompany,search]);
  const sent=data.events.filter(e=>e.event_type==='sent').length;
  const replies=data.events.filter(e=>e.event_type==='replied').length;
  const meetings=data.events.filter(e=>e.event_type==='meeting').length;
@@ -155,7 +156,7 @@ export function Workspace({supabase,user,getToken}) {
     </>}
     {page==='companies'&&<>
      <div className="page-title-row"><div><span className="eyebrow">YOUR TARGET UNIVERSE</span><h1>Companies</h1><p>Import your company list from Excel. Founders named in the sheet are saved as contacts.</p></div>{canImport&&<div className="action-row"><label className="btn btn-dark" style={importing?{opacity:.6,pointerEvents:'none'}:undefined}><Upload size={15}/> {importing?'Importing…':'Import Companies'}<input hidden type="file" accept=".xlsx,.xls,.csv" disabled={importing} onChange={importFile}/></label></div>}</div>
-     <div className="surface"><div className="table-toolbar"><div className="searchbox"><Search size={16}/><input placeholder="Search companies…" value={search} onChange={e=>setSearch(e.target.value)}/></div></div><div className="company-table">{companyFiltered.map(c=><div className="company-row" key={c.id}><div className="company-symbol">{(c.name||'?').slice(0,1).toUpperCase()}</div><div className="company-name"><b>{c.name}</b><small>{c.website||c.country||'Add company details'}</small></div><div className="company-type">{c.sector||'Sector not set'}</div><div className="company-contact">Priority {c.priority||3}</div><div className="company-links">{c.website&&<a href={c.website.startsWith('http')?c.website:'https://'+c.website} target="_blank" rel="noreferrer"><Globe2 size={15}/></a>}{c.linkedin_url&&<a href={c.linkedin_url} target="_blank" rel="noreferrer" title="Company on LinkedIn"><Linkedin size={15}/></a>}{!contactCompanyIds.has(c.id)&&<a className="subtle-link" href={'https://www.linkedin.com/search/results/people/?keywords='+encodeURIComponent(c.name+' Founder CEO')} target="_blank" rel="noreferrer">Find founder</a>}</div></div>)}{!companyFiltered.length&&<div className="empty-state"><Building2 size={25}/><b>No companies yet</b><span>{canImport?'Use “Import Companies” to load your Excel list.':'Company records will appear here after the authorised import.'}</span></div>}</div></div>
+     <div className="surface"><div className="table-toolbar"><div className="searchbox"><Search size={16}/><input placeholder="Search by name, sector, country or contact…" value={search} onChange={e=>setSearch(e.target.value)}/></div><span className="cc-count">{companyFiltered.length} of {data.companies.length} companies</span></div><div className="cc-list">{companyFiltered.map(c=><CompanyCard key={c.id} company={c} contacts={contactsByCompany.get(c.id)||[]} onMessage={id=>{setSelected(id);setDraft(null);setPage('outreach');}}/>)}{!companyFiltered.length&&<div className="empty-state"><Building2 size={25}/><b>{data.companies.length?'No companies match your search':'No companies yet'}</b><span>{data.companies.length?'Try a different name, sector or country.':canImport?'Use “Import Companies” to load your Excel list.':'Company records will appear here after the authorised import.'}</span></div>}</div></div>
     </>}
     {page==='contacts'&&<>
      <div className="page-title-row"><div><span className="eyebrow">PEOPLE BEFORE PIPELINES</span><h1>Contacts</h1><p>Founders, CEOs, CTOs, product leaders and hiring decision makers.</p></div></div>
