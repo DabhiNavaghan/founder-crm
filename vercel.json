@@ -1,0 +1,18 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    { "source": "/companies", "destination": "/api/directory?view=list" },
+    { "source": "/companies/:slug", "destination": "/api/directory?view=company&slug=:slug" },
+    { "source": "/new", "destination": "/api/directory?view=new" },
+    { "source": "/sector/:preset", "destination": "/api/directory?view=sector&preset=:preset" },
+    { "source": "/city/:preset", "destination": "/api/directory?view=city&preset=:preset" },
+    { "source": "/sitemap.xml", "destination": "/api/directory?view=sitemap" },
+    { "source": "/remove", "destination": "/api/remove" }
+  ],
+  "crons": [{ "path": "/api/cron/refresh", "schedule": "0 6 * * *" }],
+  "functions": {
+    "api/cron/refresh.js": { "maxDuration": 60 },
+    "api/directory.js": { "maxDuration": 15 },
+    "api/remove.js": { "maxDuration": 15 }
+  }
+}

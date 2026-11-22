@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Building2, Users, Send, CalendarClock, BarChart3, Settings, Upload, Search, Linkedin, Mail, Globe2, CheckCircle2, Sparkles, Copy, X, ShieldCheck, ArrowRight, Menu, Zap } from 'lucide-react';
+import { Building2, Users, Send, CalendarClock, BarChart3, Settings, Upload, Search, Compass, Linkedin, Mail, Globe2, CheckCircle2, Sparkles, Copy, X, ShieldCheck, ArrowRight, Menu, Zap } from 'lucide-react';
 import { UserButton } from '@clerk/react';
 import { parseWorkbook, COMPANY_FIELDS, EXTRA_FIELDS, packExtras, withExtras } from './importCompanies.js';
 import { CompanyCard } from './CompanyCard.jsx';
@@ -30,7 +30,20 @@ export function Workspace({supabase,user,getToken}) {
   setData({companies:(results[0].data||[]).map(withExtras),contacts:results[1].data||[],messages:results[2].data||[],events:results[3].data||[],profile:results[4].data?.[0]||null});
   setLoading(false);
  };
- useEffect(()=>{if(supabase&&user?.id)refresh();},[user?.id]);
+ // Arriving from a public directory page (/?draft=slug&contact=id): copy that company into this workspace, then open the studio on that person.
+ const openDraft=async()=>{
+  let intent=null;
+  try{intent=JSON.parse(sessionStorage.getItem('foundreach_draft')||'null');sessionStorage.removeItem('foundreach_draft');}catch{}
+  if(/[?&]draft=/.test(window.location.search))window.history.replaceState(null,'','/');
+  if(!intent?.slug){await refresh();return;}
+  const {data:claim,error:e}=await supabase.rpc('claim_company',{p_slug:intent.slug});
+  await refresh();
+  if(e){notify('Could not add that company: '+e.message);return;}
+  const map=claim?.contacts||{},id=map[intent.contact]||Object.values(map)[0]||'';
+  setSelected(id);setDraft(null);setPage(id?'outreach':'companies');
+  notify(id?(claim.created?'Company added to your workspace. Add one detail and draft your message.':'Ready to draft your message.'):'Company added to your workspace. It has no contacts yet.');
+ };
+ useEffect(()=>{if(supabase&&user?.id)openDraft();},[user?.id]);
  const companyFor=id=>data.companies.find(c=>c.id===id);
  const contactFor=id=>data.contacts.find(c=>c.id===id);
  const save=async(table,row)=>{
@@ -168,7 +181,7 @@ export function Workspace({supabase,user,getToken}) {
  return <div className="app-layout">
   <aside className={'sidebar '+(mobile?'show':'')}>
    <div className="side-brand"><div className="logo-mark">F</div><span>founderflow<small>RELATIONSHIP OS</small></span><button className="mobile-close" onClick={()=>setMobile(false)}><X/></button></div>
-   <div className="side-label">WORKSPACE</div><nav>{NAV.map(item=><button key={item.id} className={page===item.id?'nav-active':''} onClick={()=>{setPage(item.id);setMobile(false)}}><item.icon size={17}/>{item.label}{item.id==='queue'&&<b className="nav-count">{queue.length}</b>}</button>)}</nav>
+   <div className="side-label">WORKSPACE</div><nav>{NAV.map(item=><button key={item.id} className={page===item.id?'nav-active':''} onClick={()=>{setPage(item.id);setMobile(false)}}><item.icon size={17}/>{item.label}{item.id==='queue'&&<b className="nav-count">{queue.length}</b>}</button>)}<a href="/companies"><Compass size={17}/>Directory</a></nav>
    <div className="sidebar-bottom"><div className="secure-pill"><ShieldCheck size={15}/> Your workspace is private</div><div className="user-meta"><div><b>{user?.fullName||user?.firstName||'Your workspace'}</b><small>{user?.primaryEmailAddress?.emailAddress}</small></div><UserButton/></div></div>
   </aside>
   <main className="main-area">

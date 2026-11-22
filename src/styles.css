@@ -29,3 +29,4 @@
 @media(max-width:700px){.cc{padding:14px}.cc-facts b{display:block;margin-bottom:2px}}
 .cc-logo{object-fit:contain;background:#fff;padding:3px;border:1px solid rgba(32,42,49,.1)}
 .cc-more{display:block;margin:16px auto 4px}
+.sidebar nav a{display:flex;align-items:center;gap:12px;width:100%;padding:11px 12px;border-radius:7px;color:#aeb9a9;font-size:12px}.sidebar nav a:hover{background:#344337;color:#f8faef}
