@@ -1,0 +1,34 @@
+# Secrets and local environment files never enter the build context.
+.env
+.env.*
+**/.env
+**/.env.*
+*.pem
+*.key
+
+# Not needed to build the image.
+.git
+.gitignore
+.github
+.vercel
+.claude
+.vscode
+.idea
+.DS_Store
+**/.DS_Store
+node_modules
+**/node_modules
+dist
+supabase
+deploy
+Dockerfile
+.dockerignore
+docker-compose*.yml
+*.md
+*.log
+npm-debug.log*
+coverage
+tmp
+temp
+scratch
+*.local

@@ -1,7 +1,6 @@
 import OpenAI from 'openai';
 import { verifyToken } from '@clerk/backend';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 export default async function handler(req, res) {
  if (req.method !== 'POST') return res.status(405).json({error:'Method not allowed'});
  try {
@@ -9,7 +8,8 @@ export default async function handler(req, res) {
   if (!auth.startsWith('Bearer ')) return res.status(401).json({error:'Sign in required'});
   const claims = await verifyToken(auth.slice(7), {secretKey:process.env.CLERK_SECRET_KEY});
   if (!claims.sub) return res.status(401).json({error:'Invalid session'});
-  if (!process.env.OPENAI_API_KEY) return res.status(503).json({error:'AI is not configured yet. Add OPENAI_API_KEY in Vercel.'});
+  if (!process.env.OPENAI_API_KEY) return res.status(503).json({error:'AI drafting is not configured yet (OPENAI_API_KEY is missing).'});
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const {contact,company,context,channel,profile}=req.body||{};
   if (!contact?.first_name || !company?.name || !context || !['LinkedIn','Email'].includes(channel)) return res.status(400).json({error:'Missing contact, company, research context or channel'});
   const prompt = `You write highly specific, human B2B outreach. The signed-in user's configurable profile is the sender identity. Never invent facts. Use only the supplied company/contact details and research context. Under 120 words. Address the contact by first name. Include one credible specific detail, a relevant benefit tied to the sender's services, and exactly one CTA for a 15-minute call (unless profile CTA specifies a different concise CTA). No generic openers, hype, or multiple pitches. Tone: confident, warm, natural. For Email include a concise subject; for LinkedIn omit subject. Return JSON with message, optional subject, score integer 1-10, improvement string. If context is weak, score below 7 and say more research is needed.`;
