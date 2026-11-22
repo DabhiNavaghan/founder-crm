@@ -106,3 +106,21 @@ export function parseWorkbook(arrayBuffer) {
   for (const [company, person] of extraPeople) byName.get(company)?.contacts.push(person);
   return out;
 }
+
+// Logo, hiring email, city and source have their own columns once the enrichment migration is applied.
+// Until then they are stored together as JSON in the otherwise unused product_type column.
+export const EXTRA_FIELDS = ['logo_url', 'hiring_email', 'location', 'source'];
+export function packExtras(company) {
+  const extras = {};
+  for (const f of EXTRA_FIELDS) if (company[f]) extras[f] = company[f];
+  return Object.keys(extras).length ? JSON.stringify(extras) : null;
+}
+export function withExtras(company) {
+  if (typeof company.product_type !== 'string' || !company.product_type.startsWith('{')) return company;
+  try {
+    const extras = JSON.parse(company.product_type);
+    const out = { ...company };
+    for (const f of EXTRA_FIELDS) if (!out[f] && extras[f]) out[f] = extras[f];
+    return out;
+  } catch { return company; }
+}

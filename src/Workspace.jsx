@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Building2, Users, Send, CalendarClock, BarChart3, Settings, Upload, Search, Linkedin, Mail, Globe2, CheckCircle2, Sparkles, Copy, X, ShieldCheck, ArrowRight, Menu, Zap } from 'lucide-react';
 import { UserButton } from '@clerk/react';
-import { parseWorkbook, COMPANY_FIELDS } from './importCompanies.js';
+import { parseWorkbook, COMPANY_FIELDS, EXTRA_FIELDS, packExtras, withExtras } from './importCompanies.js';
 import { CompanyCard } from './CompanyCard.jsx';
 
 const EMPTY = {companies:[],contacts:[],messages:[],events:[],profile:null};
@@ -27,7 +27,7 @@ export function Workspace({supabase,user,getToken}) {
   const results=await Promise.all(names.map(all));
   const failed=results.find(r=>r.error);
   if(failed){setError(failed.error.message);setLoading(false);return;}
-  setData({companies:results[0].data||[],contacts:results[1].data||[],messages:results[2].data||[],events:results[3].data||[],profile:results[4].data?.[0]||null});
+  setData({companies:(results[0].data||[]).map(withExtras),contacts:results[1].data||[],messages:results[2].data||[],events:results[3].data||[],profile:results[4].data?.[0]||null});
   setLoading(false);
  };
  useEffect(()=>{if(supabase&&user?.id)refresh();},[user?.id]);
@@ -52,15 +52,12 @@ export function Workspace({supabase,user,getToken}) {
    if(!parsed.length){notify('No companies found. The sheet needs a "Company" column.');return;}
    const norm=v=>String(v||'').trim().toLowerCase().replace(/\/+$/,'');
    // Until the enrichment migration has been run, the extra columns do not exist: keep their data in existing fields instead of failing.
-   const EXTRA=['logo_url','hiring_email','location','source'];
-   const probe=await supabase.from('companies').select(EXTRA.join(',')).limit(1);
+   const probe=await supabase.from('companies').select(EXTRA_FIELDS.join(',')).limit(1);
    if(probe.error)for(const {company} of parsed){
-    if(company.hiring_email&&!company.contact_email)company.contact_email=company.hiring_email;
-    const more=[company.location&&'HQ: '+company.location,company.hiring_email&&company.hiring_email!==company.contact_email&&'Hiring email: '+company.hiring_email].filter(Boolean).join(' · ');
-    if(more)company.notes=[more,company.notes].filter(Boolean).join(' · ');
-    for(const f of EXTRA)delete company[f];
+    const packed=packExtras(company);if(packed)company.product_type=packed;
+    for(const f of EXTRA_FIELDS)delete company[f];
    }
-   const fields=probe.error?COMPANY_FIELDS.filter(f=>!EXTRA.includes(f)):COMPANY_FIELDS;
+   const fields=probe.error?[...COMPANY_FIELDS.filter(f=>!EXTRA_FIELDS.includes(f)),'product_type']:COMPANY_FIELDS;
    const byName=new Map(data.companies.map(c=>[norm(c.name),c]));
    const byWebsite=new Map(data.companies.filter(c=>c.website).map(c=>[norm(c.website),c]));
    const fresh=[],updates=[];
@@ -84,15 +81,23 @@ export function Workspace({supabase,user,getToken}) {
     saved.push(...results.map(r=>r.data));
    }
    const idByName=new Map(saved.map(c=>[norm(c.name),c]));
-   const known=new Set(data.contacts.map(c=>c.company_id+'|'+norm(c.first_name+' '+(c.last_name||''))));
-   const people=[];
+   const known=new Map(data.contacts.map(c=>[c.company_id+'|'+norm(c.first_name+' '+(c.last_name||'')),c]));
+   const people=[],patches=[];
    for(const {company,contacts} of parsed){
     const owner=idByName.get(norm(company.name))||saved.find(c=>company.website&&norm(c.website)===norm(company.website));
     if(!owner)continue;
     for(const c of contacts){
      const id=owner.id+'|'+norm(c.first_name+' '+(c.last_name||''));
-     if(known.has(id))continue;
-     known.add(id);
+     const have=known.get(id);
+     if(have){
+      const patch={};
+      if(c.email&&!have.email)patch.email=c.email;
+      if(c.linkedin_url&&!have.linkedin_url)patch.linkedin_url=c.linkedin_url;
+      if(c.role_category&&!have.role_category)patch.role_category=c.role_category;
+      if(Object.keys(patch).length)patches.push({id:have.id,...patch});
+      continue;
+     }
+     known.set(id,c);
      people.push({owner_id:user.id,company_id:owner.id,first_name:c.first_name,last_name:c.last_name||null,role:c.role||null,role_category:c.role_category||null,linkedin_url:c.linkedin_url||null,email:c.email||null,priority:owner.priority||3,quality_score:scoreContact(c,owner)});
     }
    }
@@ -100,6 +105,11 @@ export function Workspace({supabase,user,getToken}) {
     setProgress('Saving contacts '+Math.min(i+500,people.length)+' / '+people.length);
     const r=await supabase.from('contacts').insert(people.slice(i,i+500));
     if(r.error)throw new Error(r.error.message);
+   }
+   for(let i=0;i<patches.length;i+=10){
+    setProgress('Updating contacts '+Math.min(i+10,patches.length)+' / '+patches.length);
+    const results=await Promise.all(patches.slice(i,i+10).map(({id,...f})=>supabase.from('contacts').update(f).eq('id',id)));
+    const failed=results.find(r=>r.error);if(failed)throw new Error(failed.error.message);
    }
    await refresh();
    notify('Imported '+fresh.length+' new '+(fresh.length===1?'company':'companies')+(updates.length?', updated '+updates.length:'')+' and added '+people.length+' contact'+(people.length===1?'':'s')+'.');
@@ -125,7 +135,7 @@ export function Workspace({supabase,user,getToken}) {
   setBusy(true);setDraft(null);
   try{
    const token=await getToken();
-   const response=await fetch('/api/generate-message',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({contact:person,company,context,channel,profile:data.profile})});
+   const response=await fetch('/api/generate-message',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({contact:person,company:{...company,product_type:undefined},context,channel,profile:data.profile})});
    const result=await response.json();if(!response.ok)throw new Error(result.error||'Could not generate message');
    setDraft(result);
    const saved=await save('outreach_messages',{owner_id:user.id,contact_id:person.id,company_id:company.id,channel,variant,subject:result.subject||null,body:result.message,relevance_score:result.score,improvement:result.improvement||'',research_context:context,status:'draft'});
