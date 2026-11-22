@@ -82,14 +82,14 @@
     <a class="more" href="/companies">Browse all companies &rarr;</a>
   </section>
 
-  <!-- 2. Counts strip (live numbers replace these when /api/public/stats answers) -->
+  <!-- 2. Counts strip. The values between the fr: markers are written at build time (vite.config.js) and refreshed in the browser. -->
   <section class="wrap lp-new" aria-labelledby="counts-h">
     <h2 class="sr-only" id="counts-h">The directory in numbers</h2>
     <a class="facts" href="/new" data-counts>
-      <div><b data-stat="companies">3,300+</b><span>startups</span></div>
-      <div><b data-stat="leaders">5,800+</b><span>founders and leaders</span></div>
-      <div><b data-stat="hiring">Open roles</b><span>hiring now</span></div>
-      <div><b data-stat="new_this_week">Daily</b><span>new this week</span></div>
+      <div><b data-stat="companies"><!--fr:stat:companies-->3,343<!--/fr:stat:companies--></b><span>startups</span></div>
+      <div><b data-stat="leaders"><!--fr:stat:leaders-->5,953<!--/fr:stat:leaders--></b><span>founders and leaders</span></div>
+      <div><b data-stat="hiring"><!--fr:stat:hiring-->1,966<!--/fr:stat:hiring--></b><span>hiring now</span></div>
+      <div><b data-stat="new_this_week"><!--fr:stat:new_this_week-->28<!--/fr:stat:new_this_week--></b><span>new this week</span></div>
     </a>
     <div data-newest hidden>
       <div class="sec-top">
@@ -117,30 +117,27 @@
       <div>
         <h3>By sector</h3>
         <ul class="pills" data-browse="sectors">
-          <li><a class="pill" href="/sector/b2b">B2B</a></li>
+          <!--fr:list:sectors--><li><a class="pill" href="/sector/b2b">B2B</a></li>
           <li><a class="pill" href="/sector/healthcare">Healthcare</a></li>
           <li><a class="pill" href="/sector/industrials">Industrials</a></li>
           <li><a class="pill" href="/sector/consumer">Consumer</a></li>
-          <li><a class="pill" href="/sector/fintech">Fintech</a></li>
+          <li><a class="pill" href="/sector/fintech">Fintech</a></li><!--/fr:list:sectors-->
         </ul>
       </div>
       <div>
         <h3>By city</h3>
         <ul class="pills" data-browse="cities">
-          <li><a class="pill" href="/city/san-francisco">San Francisco</a></li>
-          <li><a class="pill" href="/city/new-york-city-ny">New York City</a></li>
-          <li><a class="pill" href="/city/los-angeles-ca">Los Angeles</a></li>
+          <!--fr:list:cities--><li><a class="pill" href="/city/san-francisco">San Francisco</a></li>
+          <li><a class="pill" href="/city/new-york-city-ny">New York City, NY</a></li>
+          <li><a class="pill" href="/city/los-angeles-ca">Los Angeles, CA</a></li>
           <li><a class="pill" href="/city/boston">Boston</a></li>
-          <li><a class="pill" href="/city/austin-tx">Austin</a></li>
+          <li><a class="pill" href="/city/austin-tx">Austin, TX</a></li><!--/fr:list:cities-->
         </ul>
       </div>
       <div>
         <h3>By source</h3>
         <ul class="pills" data-browse="sources">
-          <li><a class="pill" href="/companies">All companies</a></li>
-          <li><a class="pill" href="/new">New this week</a></li>
-          <li><a class="pill" href="/hiring">Hiring now</a></li>
-          <li><a class="pill" href="/collections">Collections</a></li>
+          <!--fr:list:sources--><li><a class="pill" href="/source/yc">Y Combinator</a></li><!--/fr:list:sources-->
         </ul>
       </div>
     </div>
@@ -207,7 +204,7 @@
 <footer class="foot">
   <div class="wrap">
     <p class="foot-brand"><svg width="24" height="24" viewBox="0 0 40 40" aria-hidden="true"><rect width="40" height="40" rx="10" fill="#c9f15a"/><path d="M13 27L27 13" fill="none" stroke="#202a31" stroke-width="3.6" stroke-linecap="round"/><circle cx="13" cy="27" r="5" fill="#202a31"/><circle cx="27" cy="13" r="4.4" fill="#c9f15a" stroke="#202a31" stroke-width="3.2"/></svg>Every startup, one step from its founders.</p>
-    <nav class="foot-cols" aria-label="Browse the directory" data-foot-cols hidden></nav>
+    <nav class="foot-cols" aria-label="Browse the directory" data-foot-cols><!--fr:footcols--><div><p class="foot-h">Sectors</p><ul><li><a href="/sector/b2b">B2B</a></li><li><a href="/sector/healthcare">Healthcare</a></li><li><a href="/sector/fintech">Fintech</a></li></ul></div><div><p class="foot-h">Cities</p><ul><li><a href="/city/san-francisco">San Francisco</a></li><li><a href="/city/new-york-city-ny">New York City, NY</a></li></ul></div><div><p class="foot-h">Sources</p><ul><li><a href="/source/yc">Y Combinator</a></li></ul></div><!--/fr:footcols--></nav>
     <nav class="foot-nav" aria-label="Footer">
       <a href="/companies">Directory</a>
       <a href="/new">New this week</a>

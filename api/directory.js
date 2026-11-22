@@ -20,7 +20,8 @@ const CACHE = 'public, s-maxage=3600, stale-while-revalidate=86400';
 const STATS_CACHE = 'public, s-maxage=600, stale-while-revalidate=3600';
 const BROWSER = 'public, max-age=0, must-revalidate';
 // Page-type thresholds: below them the page is a 404 and is left out of the sitemap.
-const MIN = { batch: 5, source: 10, hiring: 10, 'hiring-sector': 10, 'sector-city': 10, collection: 20 };
+// Sector and city pages always render, but with fewer than `thin` companies they are noindex and not in the sitemap.
+const MIN = { thin: 10, batch: 5, source: 10, hiring: 10, 'hiring-sector': 10, 'sector-city': 10, collection: 20 };
 const one = v => (Array.isArray(v) ? v[0] : v);
 const str = (v, max = 80) => String(one(v) ?? '').trim().slice(0, max);
 
@@ -84,8 +85,8 @@ async function listAll(res, query) {
   if (f.q || active.length >= 2) robots = 'noindex,follow';
   else if (active.length === 1) {
     const k = active[0];
-    const target = k === 'sector' && facetHit([facets?.industries, facets?.sectors], f.sector) ? '/sector/' + f.sector
-      : k === 'city' && facetHit([facets?.cities], f.city) ? '/city/' + f.city
+    const target = k === 'sector' && total >= MIN.thin && facetHit([facets?.industries, facets?.sectors], f.sector) ? '/sector/' + f.sector
+      : k === 'city' && total >= MIN.thin && facetHit([facets?.cities], f.city) ? '/city/' + f.city
       : k === 'batch' && total >= MIN.batch ? '/batch/' + f.batch.toLowerCase()
       : k === 'source' && total >= MIN.source ? '/source/' + f.source
       : k === 'hiring' && total >= MIN.hiring ? '/hiring' : '';
@@ -184,6 +185,7 @@ async function listPage(res, query, kind) {
   send(res, 200, renderList({
     kind, path, labels, crumbs, related, filters: f, facets: facets || {}, total, facts: data?.facts || null, rows: data?.rows, nav,
     canonical: SITE + path + (f.page > 1 ? '?page=' + f.page : ''), showForm: kind !== 'collection',
+    robots: (kind === 'sector' || kind === 'city') && total < MIN.thin ? 'noindex,follow' : '',
   }));
 }
 

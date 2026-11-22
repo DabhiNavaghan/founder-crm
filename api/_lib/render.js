@@ -21,6 +21,14 @@ export const stripEmails = v => String(v ?? '').replace(EMAIL_RE, '').replace(SP
 const text = v => stripEmails(v).replace(/\s+/g, ' ').trim();
 export const slugify = v => String(v ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 export const clip = (s, n) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s);
+// Cuts at a word boundary so the result is at most n characters.
+export function trimWords(v, n) {
+  const t = String(v ?? '');
+  if (t.length <= n) return t;
+  const cut = t.slice(0, n - 1);
+  const at = cut.lastIndexOf(' ');
+  return (at > n * 0.6 ? cut.slice(0, at) : cut).replace(/[\s,;:·(—-]+$/, '') + '…';
+}
 const num = n => Number(n || 0).toLocaleString('en-US');
 const plural = (n, one, many) => (Number(n) === 1 ? one : many);
 
@@ -72,14 +80,14 @@ const timeTag = iso => { const p = dateParts(iso); return p ? `<time datetime="$
 
 // Rule-based collections (the rules live in the database; names and blurbs are repeated here for the pages).
 export const COLLECTIONS = {
-  ai: { name: 'AI startups', blurb: 'Companies building with AI, LLMs, machine learning or agents.' },
+  ai: { name: 'AI startups', blurb: 'Companies that describe themselves as AI, LLM, machine learning, generative or agent products.' },
   fintech: { name: 'Fintech startups', blurb: 'Payments, banking, lending, insurance and other financial technology companies.' },
   'developer-tools': { name: 'Developer tools startups', blurb: 'APIs, SDKs, infrastructure and tools built for developers.' },
   healthcare: { name: 'Healthcare startups', blurb: 'Care delivery, biotech, diagnostics and health software companies.' },
   'climate-energy': { name: 'Climate and energy startups', blurb: 'Companies working on climate, carbon, energy, solar and batteries.' },
   'open-source': { name: 'Open source startups', blurb: 'Companies whose product is open source.' },
   'robotics-hardware': { name: 'Robotics and hardware startups', blurb: 'Robots, drones and other hardware companies.' },
-  'newly-launched': { name: 'Newly launched startups', blurb: 'Companies from the last year of batches, or added to the directory in the last 90 days.' },
+  'newly-launched': { name: 'Newly launched startups', blurb: 'Companies from the two most recent batches.' },
 };
 
 // ---------------------------------------------------------------- page shell (designer: shell.html)
@@ -111,7 +119,7 @@ export function siteFooter(nav) {
     const links = (items || []).filter(o => o && o.url && text(o.label)).map(o => `<li><a href="${esc(o.url)}">${esc(text(o.label))}</a></li>`);
     if (!links.length) return '';
     if (more) links.push(`<li><a href="${more[0]}">${more[1]}</a></li>`);
-    return `<div><h2>${title}</h2><ul>${links.join('')}</ul></div>`;
+    return `<div><p class="foot-h">${title}</p><ul>${links.join('')}</ul></div>`;
   };
   const cols = nav ? [
     block('Sectors', nav.top_sectors),
@@ -147,7 +155,7 @@ const crumbsNav = crumbs => (crumbs && crumbs.length > 1
 
 function shell({ title, description = '', canonical = '', robots = '', jsonLd = null, main, mainClass = 'wrap', nav = null, active = '', skip = 'Skip to content', bodyClass = '', after = '' }) {
   const t = esc(text(title));
-  const d = esc(clip(text(description), 300));
+  const d = esc(trimWords(text(description), 155));
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -275,16 +283,21 @@ const relatedSection = (links, title = 'Related', id = 'rel-h') => {
   return body.length ? `<section class="sec" aria-labelledby="${id}"><h2 class="sec-h" id="${id}">${title}</h2>${pills(body)}</section>` : '';
 };
 
+// Titles aim for about 60 characters: the long suffix is dropped when it would not fit.
+const fitTitle = (stem, pageBit = '') => {
+  const full = `${stem}: founders, careers & contact${pageBit} | FoundReach`;
+  return full.length <= 60 ? full : `${stem}${pageBit} | FoundReach`;
+};
 // What each page type says about itself. labels: { sector, city, batch, source, collection }.
 const PAGE_TYPES = {
-  sector: { eyebrow: 'Sector', h1: l => `${l.sector} startups`, sub: (l, n) => `${n} US ${l.sector} startups, with the people who run them and how to reach each one.` },
-  city: { eyebrow: 'City', h1: l => `Startups in ${l.city}`, sub: (l, n) => `${n} startups based in ${l.city}, with the people who run them and how to reach each one.` },
-  batch: { eyebrow: 'YC batch', h1: l => `${batchName(l.batch)} startups`, sub: (l, n) => `${n} companies from Y Combinator's ${batchName(l.batch).slice(3)} batch, with the people who run them and how to reach each one.` },
-  source: { eyebrow: 'Source', h1: l => `${l.source} startups`, sub: (l, n) => `${n} startups listed by ${l.source}, with the people who run them and how to reach each one.` },
-  hiring: { eyebrow: 'Hiring', h1: () => 'Startups hiring now', sub: (l, n) => `${n} startups with an open careers page, with the people who run them and how to reach each one.` },
-  'hiring-sector': { eyebrow: 'Hiring', h1: l => `${l.sector} startups hiring now`, sub: (l, n) => `${n} ${l.sector} startups with an open careers page, with the people who run them and how to reach each one.` },
-  'sector-city': { eyebrow: 'Sector in a city', h1: l => `${l.sector} startups in ${l.city}`, sub: (l, n) => `${n} ${l.sector} companies based in ${l.city}, with the people who run them and how to reach each one.` },
-  collection: { eyebrow: 'Collection', h1: l => l.collection, sub: (l, n) => `${l.blurb || ''} ${n} companies, hiring first, then newest.`.trim() },
+  sector: { eyebrow: 'Sector', desc: (l, n) => `${n} ${l.sector} startups in the US: founders, careers pages and contact links.`, h1: l => `${l.sector} startups`, sub: (l, n) => `${n} US ${l.sector} startups, with the people who run them and how to reach each one.` },
+  city: { eyebrow: 'City', desc: (l, n) => `${n} startups in ${l.city}: founders, careers pages and contact links.`, h1: l => `Startups in ${l.city}`, sub: (l, n) => `${n} startups based in ${l.city}, with the people who run them and how to reach each one.` },
+  batch: { eyebrow: 'YC batch', desc: (l, n) => `${n} startups from the ${batchName(l.batch)} batch: founders, careers pages and contact links.`, h1: l => `${batchName(l.batch)} startups`, sub: (l, n) => `${n} companies from Y Combinator's ${batchName(l.batch).slice(3)} batch, with the people who run them and how to reach each one.` },
+  source: { eyebrow: 'Source', desc: (l, n) => `${n} startups listed by ${l.source}: founders, careers pages and contact links.`, h1: l => `${l.source} startups`, sub: (l, n) => `${n} startups listed by ${l.source}, with the people who run them and how to reach each one.` },
+  hiring: { eyebrow: 'Hiring', desc: (l, n) => `${n} startups hiring now: careers pages, founders and contact links.`, h1: () => 'Startups hiring now', sub: (l, n) => `${n} startups with an open careers page, with the people who run them and how to reach each one.` },
+  'hiring-sector': { eyebrow: 'Hiring', desc: (l, n) => `${n} ${l.sector} startups hiring now: careers pages, founders and contact links.`, h1: l => `${l.sector} startups hiring now`, sub: (l, n) => `${n} ${l.sector} startups with an open careers page, with the people who run them and how to reach each one.` },
+  'sector-city': { eyebrow: 'Sector in a city', desc: (l, n) => `${n} ${l.sector} startups in ${l.city}: founders, careers pages and contact links.`, h1: l => `${l.sector} startups in ${l.city}`, sub: (l, n) => `${n} ${l.sector} companies based in ${l.city}, with the people who run them and how to reach each one.` },
+  collection: { eyebrow: 'Collection', desc: (l, n) => `${n} ${l.collection}: founders, careers pages and contact links. ${l.blurb || ''}`.trim(), h1: l => l.collection, sub: (l, n) => `${l.blurb || ''} ${n} companies, hiring first, then newest.`.trim() },
 };
 
 // view: { kind, path, labels, crumbs, related, filters, facets, total, facts, rows, nav, canonical, robots, showForm }
@@ -352,19 +365,20 @@ ${f.year ? `<input type="hidden" name="year" value="${esc(f.year)}">` : ''}<butt
   if (type) {
     h1 = type.h1(L);
     hero = `<div class="hero" id="hero"><p class="eyebrow">${type.eyebrow}</p><h1>${esc(h1)}</h1><p class="sub">${esc(type.sub(L, num(total)))}</p></div>`;
-    title = `${h1}: founders, careers & contact${pageBit} | FoundReach`;
-    description = `${h1}: ${num(total)} ${plural(total, 'company', 'companies')} with their founders, careers pages, contact pages and LinkedIn.${page > 1 ? ` Page ${page} of ${num(pages)}.` : ''}`;
+    title = fitTitle(h1, pageBit);
+    description = `${type.desc(L, num(total))}${page > 1 ? ` Page ${page} of ${num(pages)}.` : ''}`;
   } else {
-    h1 = 'Startups you can actually reach';
-    hero = `<div class="hero" id="hero"><h1>${h1}</h1><p class="sub">Every company page shows who runs it and the fastest ways to get in touch.</p></div>`;
     // "Fintech startups in Boston · YC S24, hiring now: founders, careers & contact"
     const tBatch = batchLabel(f.batch) || (f.year ? `YC ${f.year}` : '') || sourceName;
     const lead = sectorName || tBatch;
     const subject = `${lead ? lead + ' startups' : 'Startups'}${cityName ? ' in ' + cityName : ''}${f.q ? ` matching “${f.q}”` : ''}`;
     const extras = [sectorName ? tBatch : '', f.hiring ? 'hiring now' : ''].filter(Boolean).join(', ');
-    title = `${filtered ? `${subject}${extras ? ' · ' + extras : ''}: founders, careers & contact` : `Startup directory: ${num(all)} US startups you can contact`}${pageBit} | FoundReach`;
+    // The heading says what the list is filtered to, like the title does.
+    h1 = filtered ? `${subject}${extras ? ' · ' + extras : ''}` : 'Startups you can actually reach';
+    hero = `<div class="hero" id="hero"><h1>${esc(h1)}</h1><p class="sub">Every company page shows who runs it and the fastest ways to get in touch.</p></div>`;
+    title = filtered ? fitTitle(h1, pageBit) : `Startup directory: ${num(all)} US startups you can contact${pageBit} | FoundReach`;
     description = filtered
-      ? `${num(total)} ${plural(total, 'company', 'companies')}: ${subject}${extras ? ' (' + extras + ')' : ''}, with their founders, careers pages, contact pages and LinkedIn.`
+      ? `${num(total)} ${plural(total, 'result', 'results')} for ${subject}${extras ? ' (' + extras + ')' : ''}: founders, careers pages and contact links.`
       : `Browse ${num(all)} US startups by sector, city, source and batch. Each page lists the founders, careers page, contact page and LinkedIn.${page > 1 ? ` Page ${page} of ${num(pages)}.` : ''}`;
   }
   const factsHtml = type && facts ? `<div class="facts"><div><b>${num(total)}</b><span>${plural(total, 'company', 'companies')}</span></div><div><b>${num(facts.hiring)}</b><span>hiring now</span></div><div><b>${num(facts.leaders)}</b><span>leaders listed</span></div><div><b>${num(facts.new)}</b><span>new this week</span></div></div>` : '';
@@ -499,9 +513,13 @@ export function renderCompany(c, { similar = [], nav = null } = {}) {
   const paragraphs = description.split(/(?:\r?\n\s*){2,}/).map(p => p.replace(/\s+/g, ' ').trim()).filter(Boolean);
   const about = paragraphs.length ? paragraphs.map(p => `<p>${esc(p)}</p>`).join('') : `<p class="muted">No description yet.</p>`;
   const people = leaders.length
-    ? `<ul class="people">${leaders.map(l => `<li><div class="p-body"><div class="p-top"><h3 class="p-name">${esc(l.name)}</h3><span class="tier${l.tier === 'Primary' ? ' tier-1' : ''}">${l.tier}</span></div>${l.role ? `<p class="p-role">${esc(l.role)}</p>` : ''}</div>${l.linkedin ? `<a class="btn" href="${esc(l.linkedin)}" rel="nofollow noopener" aria-label="${esc(l.name)} on LinkedIn">LinkedIn <span aria-hidden="true">&nearr;</span></a>` : ''}</li>`).join('')}</ul>`
+    ? `<ul class="people">${leaders.map(l => `<li><div class="p-body"><div class="p-top"><h3 class="p-name">${esc(l.name)}</h3></div>${l.role ? `<p class="p-role">${esc(l.role)}</p>` : ''}</div>${l.linkedin ? `<a class="btn" href="${esc(l.linkedin)}" rel="nofollow noopener" aria-label="${esc(l.name)} on LinkedIn">LinkedIn <span aria-hidden="true">&nearr;</span></a>` : ''}</li>`).join('')}</ul>`
     : `<p class="muted">No leaders listed yet.</p>`;
   const verified = timeTag(c.verified_at);
+  // "Source: Y Combinator and Techstars, plus the company's own website."
+  const srcNames = [...new Set((Array.isArray(c.source_labels) ? c.source_labels : []).map(v => clip(text(v), 40)).filter(Boolean))].slice(0, 4);
+  const srcList = srcNames.length > 1 ? srcNames.slice(0, -1).join(', ') + ' and ' + srcNames.at(-1) : srcNames[0] || '';
+  const sourceLine = srcList ? `Source: ${esc(srcList)}, plus the company's own website.` : `Source: public startup directories and the company's own website.`;
   const updated = timeTag(c.updated_at);
   const draftLabel = `Draft a message to ${esc(lead ? lead.first || lead.name : name)}`;
   // Similar companies: six at most, and only when there are at least three.
@@ -517,13 +535,14 @@ export function renderCompany(c, { similar = [], nav = null } = {}) {
 ${logo(c.logo_url, name, 64).replace(' loading="lazy"', '')}
 <div><h1 class="co-name">${esc(name)}</h1>${metaBits ? `<p class="co-meta">${metaBits}</p>` : ''}</div>
 ${tags ? `<ul class="tags co-tags" aria-label="Where this company comes from">${tags}</ul>` : ''}
-<div class="cta"><a class="btn btn-dark btn-lg" href="${esc(draft)}" rel="nofollow">${draftLabel}</a><a class="btn btn-lg" href="${esc(save)}" rel="nofollow">${ICON.save}Save</a><a class="btn btn-lg jump" href="#reach">Reach them &darr;</a><p class="cta-note">${note}</p></div>
+<div class="cta"><a class="btn btn-dark btn-lg cta-d" href="${esc(draft)}" rel="nofollow">${draftLabel}</a><a class="btn btn-lg cta-d" href="${esc(save)}" rel="nofollow">${ICON.save}Save</a><a class="btn btn-lg jump" href="#reach">Reach them &darr;</a><p class="cta-note">${note}</p></div>
 </header>
 <section class="card" aria-labelledby="about-h"><h2 id="about-h">About</h2><div class="prose">${about}</div></section>
 <section class="card reach" id="reach" aria-labelledby="reach-h"><h2 id="reach-h">Reach them</h2>
 ${links.length ? `<ul class="out">${links.map(([l, url]) => `<li><a href="${esc(url)}" rel="nofollow noopener"><b>${l}</b><small>${esc(shortUrl(url))}</small></a></li>`).join('')}</ul>` : ''}
 <a class="locked" href="${esc(draft)}" rel="nofollow">${ICON.lock}<span><b>Company, hiring and founder emails</b><span class="locked-go">Sign in free to view</span></span></a>
 ${verified ? `<p class="verified">${ICON.check}<span>Links last checked ${verified}</span></p>` : ''}
+<p class="verified src">${sourceLine}</p>
 <div class="reach-cta"><a class="btn btn-dark" href="${esc(draft)}" rel="nofollow">Draft a message</a><a class="btn" href="${esc(save)}" rel="nofollow">${ICON.save}Save</a></div>
 </section>
 <section class="card" aria-labelledby="leaders-h"><h2 id="leaders-h">Leaders${leaders.length ? ` <span class="muted">(${leaders.length})</span>` : ''}</h2>${people}</section>

@@ -26,7 +26,7 @@ button{font-family:inherit}
 
 /* Footer link blocks: the same rules the public pages use */
 .foot-cols{display:grid;grid-template-columns:1fr 1fr;gap:16px 20px;margin:8px 0}
-.foot-cols h2{font:700 var(--t-sm)/1.4 var(--font);color:var(--text)}
+.foot-cols h2,.foot-h{font:700 var(--t-sm)/1.4 var(--font);color:var(--text)}
 .foot-cols a{display:flex;align-items:center;min-height:var(--tap);color:var(--muted);text-decoration:none}
 .foot-cols a:hover{color:var(--ink);text-decoration:underline}
 @media (min-width:600px){.foot-cols{grid-template-columns:repeat(3,1fr)}}

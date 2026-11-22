@@ -1,8 +1,8 @@
 // The landing page is static HTML in index.html. This fills in live numbers and links from
 // /api/public/stats. Every step is optional: if the request fails the static page stays as it is.
 import { loadStats } from '../lib/stats.js';
+import { fmt, footColumns, sourceItems } from './staticStats.js';
 
-const fmt = n => n.toLocaleString('en-US');
 const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
 
 function pills(list, items, tail) {
@@ -46,16 +46,13 @@ function newest(root, items) {
 // The footer link blocks the public pages render on the server: same markup, built from the same numbers.
 function footer(root, stats) {
   const nav = root.querySelector('[data-foot-cols]');
-  if (!nav) return;
-  const blocks = [['Sectors', stats.sectors], ['Cities', stats.cities], ['Batches', stats.batches], ['Sources', stats.sourceLinks], ['Collections', stats.collections]]
-    .filter(b => b[1].length)
-    .map(([title, items]) => {
-      const div = el('div'), ul = el('ul');
-      for (const item of items) { const li = el('li'), a = el('a', '', item.label); a.href = item.href; li.append(a); ul.append(li); }
-      div.append(el('h2', '', title), ul);
-      return div;
-    });
-  if (!blocks.length) return;
+  const blocks = footColumns(stats).map(([title, items]) => {
+    const div = el('div'), ul = el('ul');
+    for (const item of items) { const li = el('li'), a = el('a', '', item.label); a.href = item.href; li.append(a); ul.append(li); }
+    div.append(el('p', 'foot-h', title), ul);
+    return div;
+  });
+  if (!nav || !blocks.length) return;
   nav.replaceChildren(...blocks);
   nav.hidden = false;
 }
@@ -72,7 +69,7 @@ export async function enhanceLanding() {
   }
   pills(root.querySelector('[data-browse="sectors"]'), stats.sectors);
   pills(root.querySelector('[data-browse="cities"]'), stats.cities);
-  pills(root.querySelector('[data-browse="sources"]'), stats.sourceLinks, { label: 'Collections', href: '/collections' });
+  pills(root.querySelector('[data-browse="sources"]'), sourceItems(stats));
   newest(root, stats.newest);
   footer(root, stats);
 }
