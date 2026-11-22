@@ -11,16 +11,25 @@ function Action({ url, icon: Icon, children, primary }) {
   return <a className={'cc-action' + (primary ? ' cc-action-primary' : '')} href={url} target={url.startsWith('mailto:') ? undefined : '_blank'} rel="noreferrer"><Icon size={13} />{children}</a>;
 }
 
+function Logo({ company: c }) {
+  const [failed, setFailed] = React.useState(false);
+  // Stored logo when there is one, otherwise the site's own icon.
+  const src = c.logo_url || (c.website ? 'https://www.google.com/s2/favicons?sz=128&domain=' + encodeURIComponent(host(c.website)) : '');
+  if (src && !failed) return <img className="company-symbol cc-logo" src={src} alt="" loading="lazy" onError={() => setFailed(true)} />;
+  return <div className="company-symbol">{(c.name || '?').slice(0, 1).toUpperCase()}</div>;
+}
+
 export function CompanyCard({ company: c, contacts, onMessage }) {
-  const people = [...contacts].sort((a, b) => (b.priority || 3) - (a.priority || 3));
+  const tier = p => (p.role_category === 'Secondary' ? 1 : 0);
+  const people = [...contacts].sort((a, b) => (tier(a) - tier(b)) || ((b.priority || 3) - (a.priority || 3)));
   return <article className="cc">
     <header className="cc-head">
-      <div className="company-symbol">{(c.name || '?').slice(0, 1).toUpperCase()}</div>
+      <Logo company={c} />
       <div className="cc-title">
         <h3>{c.name}</h3>
         <div className="cc-tags">
           {c.sector && <span>{c.sector}</span>}
-          {c.country && <span>{c.country}</span>}
+          {(c.location || c.country) && <span>{[c.location, c.country].filter(Boolean).join(' · ')}</span>}
           <span className={'cc-priority p' + (c.priority || 3)}>{PRIORITY[c.priority || 3]}</span>
         </div>
       </div>
@@ -30,6 +39,7 @@ export function CompanyCard({ company: c, contacts, onMessage }) {
         {c.linkedin_url && <Action url={href(c.linkedin_url)} icon={Linkedin}>LinkedIn</Action>}
         {c.contact_url && <Action url={href(c.contact_url)} icon={MessageSquare}>Contact page</Action>}
         {c.contact_email && <Action url={'mailto:' + c.contact_email} icon={Mail}>{c.contact_email}</Action>}
+        {c.hiring_email && <Action url={'mailto:' + c.hiring_email} icon={Mail}>Hiring: {c.hiring_email}</Action>}
       </div>
     </header>
     {(c.outreach_angle || c.description || c.recent_news || c.notes) && <div className="cc-facts">
@@ -43,7 +53,7 @@ export function CompanyCard({ company: c, contacts, onMessage }) {
       {people.map(p => {
         const name = (p.first_name + ' ' + (p.last_name || '')).trim();
         return <div className="cc-person" key={p.id}>
-          <div className="cc-person-name"><b>{name}</b><small>{p.role || 'Role not set'}</small></div>
+          <div className="cc-person-name"><b>{name}</b><small>{[p.role_category && p.role_category + ' contact', p.role || 'Role not set'].filter(Boolean).join(' · ')}</small></div>
           <div className="cc-actions">
             {p.linkedin_url
               ? <Action url={href(p.linkedin_url)} icon={Linkedin} primary>LinkedIn profile</Action>

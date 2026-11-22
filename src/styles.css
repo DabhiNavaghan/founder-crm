@@ -27,3 +27,5 @@
 .cc-person-name small{display:block;font-size:11px;color:#7c8778;margin-top:2px}
 .cc-count{font-size:11px;color:#8c9686}
 @media(max-width:700px){.cc{padding:14px}.cc-facts b{display:block;margin-bottom:2px}}
+.cc-logo{object-fit:contain;background:#fff;padding:3px;border:1px solid rgba(32,42,49,.1)}
+.cc-more{display:block;margin:16px auto 4px}

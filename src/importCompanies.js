@@ -13,7 +13,14 @@ const COLUMNS = {
   notes: ['notes'],
   priority: ['priority'],
   funding: ['funding stage'],
+  description: ['description', 'about', 'what they do'],
+  logo_url: ['logo', 'company logo', 'logo url'],
+  hiring_email: ['hiring email', 'careers email', 'hiring / careers email'],
+  contact_url: ['contact page', 'contact url'],
+  location: ['location', 'city', 'hq'],
+  source: ['source'],
 };
+export const COMPANY_FIELDS = ['website', 'country', 'sector', 'careers_url', 'linkedin_url', 'contact_email', 'outreach_angle', 'description', 'logo_url', 'hiring_email', 'contact_url', 'location', 'source'];
 const CONTACT_COLUMNS = [
   { name: 'primary contact', link: 'primary contact link', email: 'primary contact email', role: 'primary contact role' },
   { name: 'secondary contact', link: 'secondary contact link', email: 'secondary contact email', role: 'secondary contact role' },
@@ -51,15 +58,29 @@ export function parseWorkbook(arrayBuffer) {
   const wb = XLSX.read(arrayBuffer, { type: 'array' });
   const out = [];
   const seen = new Set();
+  const extraPeople = [];
   for (const sheet of wb.SheetNames) {
     for (const original of XLSX.utils.sheet_to_json(wb.Sheets[sheet], { defval: '' })) {
       const row = {};
       for (const [k, v] of Object.entries(original)) row[key(k)] = v;
+      // A "Contacts" sheet: one person per row, linked to a company by name.
+      if ('contact name' in row) {
+        const parts = text(row['contact name']).split(/\s+/).filter(Boolean);
+        const company = text(row.company);
+        if (!parts.length || !company) continue;
+        const person = { first_name: parts[0], last_name: parts.slice(1).join(' '), role: text(row.role) || 'Founder' };
+        const link = text(row.linkedin), email = text(row.email), type = text(row.type);
+        if (link && !/\/search\//.test(link)) person.linkedin_url = link;
+        if (email) person.email = email;
+        if (type) person.role_category = type;
+        extraPeople.push([key(company), person]);
+        continue;
+      }
       const name = pick(row, COLUMNS.name);
       if (!name || seen.has(key(name))) continue;
       seen.add(key(name));
       const company = { name };
-      for (const f of ['website', 'country', 'sector', 'careers_url', 'linkedin_url', 'contact_email', 'outreach_angle']) {
+      for (const f of COMPANY_FIELDS) {
         const v = pick(row, COLUMNS[f]); if (v) company[f] = v;
       }
       const funding = pick(row, COLUMNS.funding);
@@ -81,5 +102,7 @@ export function parseWorkbook(arrayBuffer) {
       out.push({ company, contacts });
     }
   }
+  const byName = new Map(out.map(o => [key(o.company.name), o]));
+  for (const [company, person] of extraPeople) byName.get(company)?.contacts.push(person);
   return out;
 }
