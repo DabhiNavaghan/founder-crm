@@ -25,7 +25,9 @@ export function diffSlugs(us, catalogSlugs, suppressedSlugs = []) {
   const missing = us.filter(c => !catalog.has(c.slug.toLowerCase()) && !suppressed.has(c.slug.toLowerCase()))
     .sort((a, b) => (Number(b.launched_at) || 0) - (Number(a.launched_at) || 0));
   const tracked = us.filter(c => catalog.has(c.slug.toLowerCase())).length;
-  return { missing, tracked };
+  // Companies ruled out earlier (not US-based, page gone, removed on request) are not part of the target.
+  const target = us.filter(c => catalog.has(c.slug.toLowerCase()) || !suppressed.has(c.slug.toLowerCase())).length;
+  return { missing, tracked, target };
 }
 
 // "Winter 2012" -> { batch: 'W12', batch_year: 2012 }
@@ -65,7 +67,10 @@ export function founderTier(title) {
 const CAREER_HOSTS = /(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|breezy\.hr|bamboohr\.com|ats\.rippling\.com|wellfound\.com|angel\.co|workatastartup\.com|notion\.site|recruitee\.com|smartrecruiters\.com|gem\.com|dover\.com|teamtailor\.com|pinpointhq\.com|jobvite\.com|myworkdayjobs\.com|icims\.com|polymer\.co|gusto\.com\/boards|careers-page\.com|applytojob\.com)/i;
 const CAREER_PATH = /(career|\/jobs?(\/|$|\?|#)|join-?us|join-?the-?team|joinus|work-?with-?us|we-?are-?hiring|open-?(roles|positions)|\/join(\/|$))/i;
 const CAREER_TEXT = /^\s*(careers?|jobs?|join( us| the team| our team)?|we'?re hiring|hiring|work with us|open (roles|positions))\b/i;
-const CONTACT_PATH = /(\/contact|contact-?us|get-?in-?touch|\/support(\/|$)|\/talk-to|\/demo)/i;
+// A contact page has a path segment that is exactly one of these (so /solutions/contact-centers is not one).
+const CONTACT_SEGMENTS = new Set(['contact', 'contact-us', 'contactus', 'get-in-touch', 'support', 'help']);
+const isContactPath = path => String(path).toLowerCase().split('/').some(seg => CONTACT_SEGMENTS.has(seg));
+const isLinkedinPage = u => { try { const p = new URL(u), h = p.hostname.toLowerCase(); return (h === 'linkedin.com' || h.endsWith('.linkedin.com')) && /^\/(company|in|school|showcase)\/[^/]+/i.test(p.pathname); } catch { return false; } };
 const baseDomain = host => String(host || '').toLowerCase().split(':')[0].replace(/^www\./, '');
 export function scanSite(html, finalUrl) {
   const out = { careers_url: '', contact_url: '', linkedin_url: '' };
@@ -89,7 +94,7 @@ export function scanSite(html, finalUrl) {
     const same = h === host || h.endsWith('.' + host);
     if (!out.linkedin_url && full.includes('linkedin.com/company/')) out.linkedin_url = full.split('?')[0];
     if (CAREER_HOSTS.test(full) || (same && CAREER_PATH.test(u.pathname)) || (CAREER_TEXT.test(label) && (same || CAREER_HOSTS.test(full) || /^(jobs|careers)\./.test(h)))) careers.push(full);
-    else if (same && CONTACT_PATH.test(u.pathname)) contacts.push(full);
+    else if (same && isContactPath(u.pathname)) contacts.push(full);
   }
   if (careers.length && !/rippling\.com\/(?!.*jobs)|\/blog\//.test(careers[0])) out.careers_url = careers[0];
   if (contacts.length) out.contact_url = contacts.find(c => c.toLowerCase().includes('contact')) || contacts[0];
@@ -104,11 +109,12 @@ export function buildRow(c, page, site = {}) {
   const description = clip([clean(c.one_liner), clean(c.long_description)].filter(Boolean).join(' — ').replace(EMAIL_RE, '').replace(/\s+/g, ' ').trim(), 600);
   const logo = String(c.small_logo_thumb_url || '');
   const sector = clean(String(c.subindustry || '').split(' -> ').pop()) || clean(c.industry);
-  const linkedin = [page?.linkedin_url, site.linkedin_url].map(httpUrl).find(u => u.includes('linkedin.com')) || '';
+  const linkedin = [page?.linkedin_url, site.linkedin_url].map(httpUrl).find(isLinkedinPage) || '';
+  const industry = clean(c.industry);
   return {
     slug: c.slug.toLowerCase(), name: clean(c.name), website: httpUrl(c.website),
     location: clean(page?.location) || clean(String(c.all_locations || '').split(';')[0]),
-    sector, description,
+    industry: industry && industry !== 'Unspecified' ? industry : '', sector, description,
     logo_url: /^https?:\/\//i.test(logo) && !logo.includes('missing') ? logo : '',
     careers_url: site.careers_url || (c.isHiring ? ycUrl + '/jobs' : ''),
     contact_url: site.contact_url || '', linkedin_url: linkedin,

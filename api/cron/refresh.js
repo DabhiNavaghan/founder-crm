@@ -62,7 +62,7 @@ export default async function handler(req, res) {
     ]);
     const us = usCompanies(index);
     if (us.length < 500) throw new Error('The YC index looks incomplete (' + us.length + ' US companies)');
-    const { missing, tracked } = diffSlugs(us, known?.catalog || [], known?.suppressed || []);
+    const { missing, tracked, target } = diffSlugs(us, known?.catalog || [], known?.suppressed || []);
     const batch = missing.slice(0, MAX_NEW);
     const rows = [];
     let failed = 0, next = 0;
@@ -74,7 +74,7 @@ export default async function handler(req, res) {
       }
     };
     await Promise.all(Array.from({ length: 6 }, worker));
-    const result = await rpc('ingest_companies', { p_secret: secret, p_rows: rows, p_yc_total: us.length, p_tracked: tracked }, { timeout: 15000 });
+    const result = await rpc('ingest_companies', { p_secret: secret, p_rows: rows, p_yc_total: target - rows.filter(r => r.skip).length, p_tracked: tracked }, { timeout: 15000 });
     return res.status(200).json({ ok: true, yc_total: us.length, tracked_before: tracked, missing: missing.length, looked_at: next, page_failed: failed, not_us_or_gone: rows.filter(r => r.skip).length, ...result, ms: Date.now() - started });
   } catch (e) {
     console.error('FoundReach refresh error', e?.status || '', e?.code || '', e?.message);

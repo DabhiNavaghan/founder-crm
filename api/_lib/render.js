@@ -31,6 +31,22 @@ export function safeUrl(u) {
   if (EMAIL_RE.test(raw)) return '';
   return raw;
 }
+// LinkedIn: only company, person, school and showcase pages. Search links and legacy profile/view links are never shown.
+export function safeLinkedin(u) {
+  const url = safeUrl(u);
+  if (!url) return '';
+  const p = new URL(url);
+  const host = p.hostname.toLowerCase();
+  return (host === 'linkedin.com' || host.endsWith('.linkedin.com')) && /^\/(company|in|school|showcase)\/[^/]+/i.test(p.pathname) ? url : '';
+}
+// A contact page has a path segment that is exactly one of these (so /solutions/contact-centers is not one).
+const CONTACT_SEGMENTS = new Set(['contact', 'contact-us', 'contactus', 'get-in-touch', 'support', 'help']);
+export function safeContactUrl(u) {
+  const url = safeUrl(u);
+  if (!url) return '';
+  return new URL(url).pathname.toLowerCase().split('/').some(seg => CONTACT_SEGMENTS.has(seg)) ? url : '';
+}
+const isYcUrl = u => { try { const h = new URL(u).hostname.toLowerCase(); return h === 'ycombinator.com' || h.endsWith('.ycombinator.com'); } catch { return false; } };
 function shortUrl(u) {
   try {
     const p = new URL(u);
@@ -155,7 +171,9 @@ export function renderList({ mode = 'all', basePath = '/companies', presetLabel 
   const pages = Math.max(1, Math.ceil((Number(total) || 0) / PER_PAGE));
   const all = Number(facets?.total) || 0;
   const find = (list, slug) => (list || []).find(o => slugify(o.value) === slug);
-  const sectorName = f.sector ? text(find(facets?.sectors, f.sector)?.value || f.sector) : '';
+  // The sector filter offers YC's top-level industries; a finer sector slug (older links) still filters and gets its own label.
+  const industries = facets?.industries?.length ? facets.industries : facets?.sectors;
+  const sectorName = f.sector ? text((find(facets?.industries, f.sector) || find(facets?.sectors, f.sector))?.value || f.sector) : '';
   const cityName = f.city ? text(find(facets?.cities, f.city)?.value || f.city) : '';
 
   const options = (list, current, label) => (list || []).map(o => {
@@ -173,7 +191,7 @@ export function renderList({ mode = 'all', basePath = '/companies', presetLabel 
   const select = (id, label, body) => `<div><label class="sr-only" for="${id}">${label}</label><select class="field" id="${id}" name="${id}">${body}</select></div>`;
   const form = `<form class="filters" action="${esc(basePath)}" method="get" role="search" aria-label="Filter companies">
 <div class="f-q"><label class="sr-only" for="q">Search companies</label><input class="field" id="q" name="q" type="search" placeholder="Search by name or description" autocomplete="off" maxlength="80" value="${esc(f.q || '')}"></div>
-${mode === 'sector' ? '' : select('sector', 'Sector', `<option value="">All sectors</option>${options(facets?.sectors, f.sector)}`)}
+${mode === 'sector' ? '' : select('sector', 'Sector', `<option value="">All sectors</option>${options(industries, f.sector)}`)}
 ${mode === 'city' ? '' : select('city', 'City', `<option value="">All cities</option>${options(facets?.cities, f.city)}`)}
 ${select('batch', 'Batch or year', `<option value="">All batches</option>${batchOptions}`)}
 ${select('hiring', 'Hiring', `<option value="">Hiring or not</option><option value="1"${f.hiring ? ' selected' : ''}>Hiring only</option>`)}
@@ -203,14 +221,16 @@ ${select('hiring', 'Hiring', `<option value="">Hiring or not</option><option val
     ? rowsList(rows) + '\n' + pager(basePath, f, page, pages)
     : `<div class="state"><h2>No companies match these filters.</h2><p>Try removing a filter, or browse the newest additions.</p><div class="actions"><a class="btn btn-dark" href="${esc(basePath)}">Clear filters</a><a class="btn" href="/new">See new companies</a></div></div>`;
 
-  const bits = [f.q ? `“${f.q}”` : '', mode !== 'sector' ? sectorName : '', mode !== 'city' && cityName ? 'in ' + cityName : '', batchLabel(f.batch), f.year ? String(f.year) : '', f.hiring ? 'hiring' : ''].filter(Boolean).join(', ');
-  const baseTitle = mode === 'sector' ? `${presetLabel} startups: founders, careers & contact`
-    : mode === 'city' ? `Startups in ${presetLabel}: founders, careers & contact`
-    : `Startup directory: ${num(all)} US startups you can contact`;
-  const title = `${baseTitle}${bits ? ' · ' + bits : ''}${page > 1 ? ' · page ' + page : ''} | FoundReach`;
-  const description = mode === 'sector' ? `Browse ${num(total)} US ${presetLabel} startups with their founders, careers pages, contact pages and LinkedIn.`
-    : mode === 'city' ? `Browse ${num(total)} startups in ${presetLabel} with their founders, careers pages, contact pages and LinkedIn.`
-    : `Browse ${num(all)} US startups by sector, city and YC batch. Each page lists the founders, careers page, contact page and LinkedIn.`;
+  // The title says what the page lists: "Fintech startups in Boston · YC S24, hiring now: founders, careers & contact".
+  const tSector = mode === 'sector' ? presetLabel : sectorName, tCity = mode === 'city' ? presetLabel : cityName;
+  const tBatch = batchLabel(f.batch) || (f.year ? `YC ${f.year}` : '');
+  const lead = tSector || tBatch;
+  const subject = `${lead ? lead + ' startups' : 'Startups'}${tCity ? ' in ' + tCity : ''}${f.q ? ` matching “${f.q}”` : ''}`;
+  const extras = [tSector ? tBatch : '', f.hiring ? 'hiring now' : ''].filter(Boolean).join(', ');
+  const plain = mode === 'all' && !filtered;
+  const title = `${plain ? `Startup directory: ${num(all)} US startups you can contact` : `${subject}${extras ? ' · ' + extras : ''}: founders, careers & contact`}${page > 1 ? ' · page ' + page : ''} | FoundReach`;
+  const description = plain ? `Browse ${num(all)} US startups by sector, city and YC batch. Each page lists the founders, careers page, contact page and LinkedIn.`
+    : `${num(total)} ${total === 1 ? 'company' : 'companies'}: ${subject}${extras ? ' (' + extras + ')' : ''}, with their founders, careers pages, contact pages and LinkedIn.`;
 
   return shell({
     title, description,
@@ -225,8 +245,9 @@ ${select('hiring', 'Hiring', `<option value="">Hiring or not</option><option val
 // data: { fresh, rows, run }
 export function renderNew({ fresh, rows, run }) {
   const checked = run && dateParts(run.ran_at);
-  const coverage = run && Number(run.yc_count) > 0 && checked
-    ? `<p class="count" style="margin-top:20px">Tracking ${num(run.our_count)} of ${num(run.yc_count)} active US YC companies · checked ${timeTag(run.ran_at)}</p>` : '';
+  const coverage = run
+    ? `<p class="count" style="margin-top:20px">Tracking ${num(run.our_count)} of ${num(run.yc_count)} active US YC companies${checked ? ` · checked ${timeTag(run.ran_at)}` : ''}</p>` : '';
+  rows = rows.slice(0, PER_PAGE);
   const h1 = fresh ? 'New this week' : 'Recently added';
   const sub = fresh ? 'Companies added to the directory in the last 7 days.' : 'Nothing new in the last 7 days. These are the most recent additions.';
   const list = rows.length ? rowsList(rows) : `<div class="state"><h2>No companies yet.</h2><p>Check back soon.</p><div class="actions"><a class="btn btn-dark" href="/companies">Browse all companies</a></div></div>`;
@@ -250,11 +271,12 @@ export function renderCompany(c) {
   const leaders = (Array.isArray(c.leaders) ? c.leaders : []).map(l => ({
     id: UUID_RE.test(String(l.id || '')) ? String(l.id) : '',
     first: text(l.first_name), name: [text(l.first_name), text(l.last_name)].filter(Boolean).join(' '),
-    role: text(l.role), tier: l.tier === 'Secondary' ? 'Secondary' : 'Primary', linkedin: safeUrl(l.linkedin_url),
+    role: text(l.role), tier: l.tier === 'Secondary' ? 'Secondary' : 'Primary', linkedin: safeLinkedin(l.linkedin_url),
   })).filter(l => l.name).sort((a, b) => (a.tier === 'Secondary') - (b.tier === 'Secondary'));
   const lead = leaders[0];
   const draft = `/?draft=${encodeURIComponent(slug)}${lead?.id ? '&contact=' + lead.id : ''}`;
-  const links = [['Website', safeUrl(c.website)], ['Careers page', safeUrl(c.careers_url)], ['Contact page', safeUrl(c.contact_url)], ['Company LinkedIn', safeUrl(c.linkedin_url)]].filter(l => l[1]);
+  const careers = safeUrl(c.careers_url), linkedin = safeLinkedin(c.linkedin_url);
+  const links = [['Website', safeUrl(c.website)], [isYcUrl(careers) ? 'Jobs on YC' : 'Careers page', careers], ['Contact page', safeContactUrl(c.contact_url)], ['Company LinkedIn', linkedin]].filter(l => l[1]);
   const canonical = `${SITE}/companies/${encodeURIComponent(slug)}`;
   // Two companies can share a name and a batch; the website keeps their titles apart.
   const site = c.name_shared && safeUrl(c.website) ? shortUrl(safeUrl(c.website)).split('/')[0] : '';
@@ -266,14 +288,14 @@ export function renderCompany(c) {
   if (safeUrl(c.logo_url)) jsonLd.logo = safeUrl(c.logo_url);
   if (flat) jsonLd.description = clip(flat, 600);
   if (city) jsonLd.address = { '@type': 'PostalAddress', addressLocality: city };
-  if (safeUrl(c.linkedin_url)) jsonLd.sameAs = [safeUrl(c.linkedin_url)];
+  if (linkedin) jsonLd.sameAs = [linkedin];
 
   const metaBits = [
     tag ? `<span class="tag">${esc(tag)}</span>` : '',
     city ? `<a href="/city/${esc(slugify(city))}">${esc(city)}</a>` : '',
     city && sector ? '<span aria-hidden="true">&middot;</span>' : '',
     sector ? `<a href="/sector/${esc(slugify(sector))}">${esc(sector)}</a>` : '',
-    safeUrl(c.careers_url) ? '<span class="chip">Hiring</span>' : '',
+    careers ? '<span class="chip">Hiring</span>' : '',
   ].join('');
   const note = lead ? `${esc(lead.name)}${lead.role ? ` is ${esc(lead.role)}` : ' is listed as a leader'}. Drafting needs a free sign-in.` : 'Drafting needs a free sign-in.';
   const paragraphs = description.split(/(?:\r?\n\s*){2,}/).map(p => p.replace(/\s+/g, ' ').trim()).filter(Boolean);

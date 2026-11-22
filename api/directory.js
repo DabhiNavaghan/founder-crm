@@ -5,14 +5,19 @@
 import { rpc } from './_lib/db.js';
 import { PER_PAGE, SLUG_RE, slugify, renderList, renderCompany, renderNew, renderNotFound, renderUnavailable, renderSitemap } from './_lib/render.js';
 
+// Browsers always revalidate; Vercel's edge (and any CDN in front that honours CDN-Cache-Control) keeps the HTML for an hour.
 const CACHE = 'public, s-maxage=3600, stale-while-revalidate=86400';
+const BROWSER = 'public, max-age=0, must-revalidate';
 const one = v => (Array.isArray(v) ? v[0] : v);
 const str = (v, max = 80) => String(one(v) ?? '').trim().slice(0, max);
 
 function send(res, status, body, { type = 'text/html; charset=utf-8', cache = CACHE } = {}) {
   res.statusCode = status;
   res.setHeader('Content-Type', type);
-  res.setHeader('Cache-Control', cache);
+  const store = cache !== 'no-store';
+  res.setHeader('Cache-Control', store ? BROWSER : 'no-store');
+  res.setHeader('Vercel-CDN-Cache-Control', cache);
+  res.setHeader('CDN-Cache-Control', cache);
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.end(body);
 }
@@ -39,7 +44,8 @@ async function list(res, query, mode) {
   if (mode !== 'all') {
     // /sector/:sector and /city/:city carry one filter in the path; it must name a real sector or city.
     const key = slugify(str(query.preset, 120));
-    const hit = ((mode === 'sector' ? facets.sectors : facets.cities) || []).find(o => slugify(o.value) === key);
+    const pools = mode === 'sector' ? [facets.industries, facets.sectors] : [facets.cities];
+    const hit = pools.flatMap(p => p || []).find(o => slugify(o.value) === key);
     if (!key || !hit) return notFound(res);
     presetLabel = String(hit.value);
     basePath = '/' + mode + '/' + key;
@@ -76,7 +82,7 @@ export default async function handler(req, res) {
     }
     if (view === 'sitemap') {
       const [slugs, facets] = await Promise.all([rpc('catalog_slugs'), rpc('catalog_facets')]);
-      return send(res, 200, renderSitemap({ slugs: Array.isArray(slugs) ? slugs : [], sectors: facets?.sectors || [], cities: facets?.cities || [] }), { type: 'application/xml; charset=utf-8' });
+      return send(res, 200, renderSitemap({ slugs: Array.isArray(slugs) ? slugs : [], sectors: facets?.industries?.length ? facets.industries : facets?.sectors || [], cities: facets?.cities || [] }), { type: 'application/xml; charset=utf-8' });
     }
     return notFound(res);
   } catch (e) {
