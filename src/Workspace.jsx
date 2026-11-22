@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Building2, Users, Send, CalendarClock, BarChart3, Settings, Upload, Search, Linkedin, Mail, Globe2, CheckCircle2, Sparkles, Copy, X, ShieldCheck, ArrowRight, Menu, Zap } from 'lucide-react';
-import * as XLSX from 'xlsx';
 import { UserButton } from '@clerk/react';
+import { parseWorkbook } from './importCompanies.js';
 
 const EMPTY = {companies:[],contacts:[],messages:[],events:[],profile:null};
 const NAV = [{id:'overview',label:'Overview',icon:Building2},{id:'companies',label:'Companies',icon:Building2},{id:'contacts',label:'Contacts',icon:Users},{id:'outreach',label:'Message studio',icon:Send},{id:'queue',label:'Daily queue',icon:CalendarClock},{id:'analytics',label:'Analytics',icon:BarChart3},{id:'profile',label:'My profile',icon:Settings}];
@@ -15,8 +15,8 @@ function scoreContact(c, company) {
 export function Workspace({supabase,user,getToken}) {
  const [data,setData]=useState(EMPTY),[page,setPage]=useState('overview'),[loading,setLoading]=useState(true),[error,setError]=useState('');
  const [search,setSearch]=useState(''),[toast,setToast]=useState(''),[mobile,setMobile]=useState(false);
- const [selected,setSelected]=useState(''),[context,setContext]=useState(''),[channel,setChannel]=useState('LinkedIn'),[variant,setVariant]=useState('A'),[draft,setDraft]=useState(null),[busy,setBusy]=useState(false);
- const notify=m=>{setToast(m);window.setTimeout(()=>setToast(''),3000);};
+ const [selected,setSelected]=useState(''),[context,setContext]=useState(''),[channel,setChannel]=useState('LinkedIn'),[variant,setVariant]=useState('A'),[draft,setDraft]=useState(null),[busy,setBusy]=useState(false),[importing,setImporting]=useState(false);
+ const notify=m=>{setToast(m);window.setTimeout(()=>setToast(''),5000);};
  const refresh=async()=>{
   setLoading(true);setError('');
   const names=['companies','contacts','outreach_messages','outreach_events','sender_profiles'];
@@ -38,43 +38,56 @@ export function Workspace({supabase,user,getToken}) {
   return saved;
  };
  const canImport=(user?.primaryEmailAddress?.emailAddress||'').toLowerCase()==='dabhinavaghan1@gmail.com';
- const importFile=e=>{
-  if(!canImport){notify('Excel import is restricted to the authorised account.');return;}
-  const file=e.target.files?.[0];if(!file)return;
-  const reader=new FileReader();
-  reader.onload=async ev=>{
-   try{
-    const wb=XLSX.read(ev.target.result,{type:'array'});
-    const rows=wb.SheetNames.flatMap(sheet=>XLSX.utils.sheet_to_json(wb.Sheets[sheet],{defval:''}));
-    let companyCount=0,contactCount=0;
-    const knownCompanies=[...data.companies],knownContacts=[...data.contacts];
-    for(const r of rows){
-     const name=String(r.Company||r['Company Name']||r.Name||'').trim();if(!name)continue;
-     const website=String(r['Company Website']||r.Website||'').trim();
-     const duplicate=knownCompanies.find(c=>(website&&c.website?.toLowerCase()===website.toLowerCase())||c.name?.toLowerCase()===name.toLowerCase());
-     const companyRow={owner_id:user.id,name,website,country:r.Region||r.Country||'',contact_email:r['Support / Contact Email']||r.Email||'',careers_url:r['Hiring / Careers Page']||'',linkedin_url:r['Company LinkedIn']||'',outreach_angle:r['Best Outreach Angle']||'',notes:r.Notes||''};
-     const company=await save('companies',duplicate?{...duplicate,...companyRow}:companyRow);
-     if(!company)continue;
-     if(!duplicate)companyCount++;
-     knownCompanies.push(company);
-     const candidates=[
-      {name:r['Primary Contact'],url:r['Primary Contact Link'],role:r['Primary Contact Role']||'Founder / Decision Maker'},
-      {name:r['Secondary Contact'],url:r['Secondary Contact Link'],role:r['Secondary Contact Role']||'Decision Maker'}
-     ];
-     for(const candidate of candidates){
-      const fullName=String(candidate.name||'').trim();if(!fullName)continue;
-      const parts=fullName.split(/\s+/);
-      const linkedin=String(candidate.url||'').trim();
-      const existing=knownContacts.find(c=>c.company_id===company.id&&((linkedin&&c.linkedin_url?.toLowerCase()===linkedin.toLowerCase())||((c.first_name+' '+(c.last_name||'')).trim().toLowerCase()===fullName.toLowerCase())));
-      if(existing)continue;
-      const person=await save('contacts',{owner_id:user.id,company_id:company.id,first_name:parts[0],last_name:parts.slice(1).join(' '),role:candidate.role,linkedin_url:linkedin,priority:Number(r.Priority)||3,notes:r.Notes||'',quality_score:scoreContact({first_name:parts[0],last_name:parts.slice(1).join(' '),role:candidate.role,linkedin_url:linkedin},company)});
-      if(person){knownContacts.push(person);contactCount++;}
-     }
+ const importFile=async e=>{
+  const file=e.target.files?.[0];e.target.value='';
+  if(!file||importing)return;
+  if(!canImport){notify('Company import is restricted to the authorised account.');return;}
+  setImporting(true);
+  try{
+   const parsed=parseWorkbook(await file.arrayBuffer());
+   if(!parsed.length){notify('No companies found. The sheet needs a "Company" column.');return;}
+   const norm=v=>String(v||'').trim().toLowerCase().replace(/\/+$/,'');
+   const byName=new Map(data.companies.map(c=>[norm(c.name),c]));
+   const byWebsite=new Map(data.companies.filter(c=>c.website).map(c=>[norm(c.website),c]));
+   const fresh=[],updates=[];
+   for(const {company} of parsed){
+    const existing=byName.get(norm(company.name))||(company.website&&byWebsite.get(norm(company.website)));
+    if(existing)updates.push({id:existing.id,...company});
+    else fresh.push({owner_id:user.id,name:company.name,website:company.website||null,country:company.country||null,sector:company.sector||null,careers_url:company.careers_url||null,linkedin_url:company.linkedin_url||null,contact_email:company.contact_email||null,outreach_angle:company.outreach_angle||null,notes:company.notes||null,priority:company.priority||3});
+   }
+   const saved=[];
+   if(fresh.length){
+    const r=await supabase.from('companies').insert(fresh).select();
+    if(r.error)throw new Error(r.error.message);
+    saved.push(...r.data);
+   }
+   // Existing companies only get the fields the sheet actually has; nothing is blanked out.
+   for(let i=0;i<updates.length;i+=10){
+    const results=await Promise.all(updates.slice(i,i+10).map(({id,...fields})=>supabase.from('companies').update(fields).eq('id',id).select().single()));
+    const failed=results.find(r=>r.error);if(failed)throw new Error(failed.error.message);
+    saved.push(...results.map(r=>r.data));
+   }
+   const idByName=new Map(saved.map(c=>[norm(c.name),c]));
+   const known=new Set(data.contacts.map(c=>c.company_id+'|'+norm(c.first_name+' '+(c.last_name||''))));
+   const people=[];
+   for(const {company,contacts} of parsed){
+    const owner=idByName.get(norm(company.name))||saved.find(c=>company.website&&norm(c.website)===norm(company.website));
+    if(!owner)continue;
+    for(const c of contacts){
+     const id=owner.id+'|'+norm(c.first_name+' '+(c.last_name||''));
+     if(known.has(id))continue;
+     known.add(id);
+     people.push({owner_id:user.id,company_id:owner.id,first_name:c.first_name,last_name:c.last_name||null,role:c.role||null,linkedin_url:c.linkedin_url||null,email:c.email||null,priority:owner.priority||3,quality_score:scoreContact(c,owner)});
     }
-    notify('Imported '+companyCount+' new companies and '+contactCount+' contacts. All records are private to your account.');
-   }catch(err){notify('Excel import failed: '+err.message);}
-  };
-  reader.readAsArrayBuffer(file);e.target.value='';
+   }
+   if(people.length){
+    const r=await supabase.from('contacts').insert(people).select();
+    if(r.error)throw new Error(r.error.message);
+   }
+   await refresh();
+   notify('Imported '+fresh.length+' new '+(fresh.length===1?'company':'companies')+(updates.length?', updated '+updates.length:'')+' and added '+people.length+' contact'+(people.length===1?'':'s')+'.');
+  }catch(err){notify('Import failed: '+err.message);}
+  finally{setImporting(false);}
  };
  const recordEvent=async(contact,event_type,extra={})=>{
   if(!contact)return;
@@ -118,6 +131,7 @@ export function Workspace({supabase,user,getToken}) {
    return (overdueB-overdueA)||((b.warm_contact?1:0)-(a.warm_contact?1:0))||((b.priority||3)-(a.priority||3))||(dueA-dueB);
   }).slice(0,20);
  },[data.contacts,data.companies]);
+ const contactCompanyIds=useMemo(()=>new Set(data.contacts.map(c=>c.company_id)),[data.contacts]);
  const sent=data.events.filter(e=>e.event_type==='sent').length;
  const replies=data.events.filter(e=>e.event_type==='replied').length;
  const meetings=data.events.filter(e=>e.event_type==='meeting').length;
@@ -140,12 +154,12 @@ export function Workspace({supabase,user,getToken}) {
      <div className="content-grid"><section className="surface"><div className="section-head"><div><span className="eyebrow">YOUR PIPELINE</span><h2>Relationship snapshot</h2></div><button className="subtle-link" onClick={()=>setPage('companies')}>All companies <ArrowRight size={14}/></button></div>{['researching','ready','contacted','replied','meeting_booked'].map((s,i)=><div className="pipeline-step" key={s}><span className="step-mark">{i+1}</span><div><b>{['Researching','Ready to contact','Contacted','Replied','Meeting booked'][i]}</b><small>{i<2?data.companies.filter(c=>c.status===s).length:data.contacts.filter(c=>c.status===s).length} records</small></div><ArrowRight size={15}/></div>)}</section><section className="surface next-card"><span className="eyebrow">TODAY’S FOCUS</span><div className="sparkle-icon"><Sparkles size={21}/></div><h2>{queue.length} contacts<br/>in your priority queue.</h2><p>Warm contacts, higher-priority people and due follow-ups appear first.</p><button className="btn btn-light" onClick={()=>setPage('queue')}>Open daily queue <ArrowRight size={15}/></button></section></div>
     </>}
     {page==='companies'&&<>
-     <div className="page-title-row"><div><span className="eyebrow">YOUR TARGET UNIVERSE</span><h1>Companies</h1><p>Store company research and the reasons you want to connect.</p></div>{canImport&&<div className="action-row"><label className="btn btn-light"><Upload size={15}/> Import Excel<input hidden type="file" accept=".xlsx,.xls,.csv" onChange={importFile}/></label></div>}</div>
-     <div className="surface"><div className="table-toolbar"><div className="searchbox"><Search size={16}/><input placeholder="Search companies…" value={search} onChange={e=>setSearch(e.target.value)}/></div></div><div className="company-table">{companyFiltered.map(c=><div className="company-row" key={c.id}><div className="company-symbol">{(c.name||'?').slice(0,1).toUpperCase()}</div><div className="company-name"><b>{c.name}</b><small>{c.website||c.country||'Add company details'}</small></div><div className="company-type">{c.sector||'Sector not set'}</div><div className="company-contact">Priority {c.priority||3}</div><div className="company-links">{c.website&&<a href={c.website.startsWith('http')?c.website:'https://'+c.website} target="_blank" rel="noreferrer"><Globe2 size={15}/></a>}{c.linkedin_url&&<a href={c.linkedin_url} target="_blank" rel="noreferrer"><Linkedin size={15}/></a>}</div></div>)}{!companyFiltered.length&&<div className="empty-state"><Building2 size={25}/><b>No companies yet</b><span>Company records will appear here after the authorised Excel import.</span></div>}</div></div>
+     <div className="page-title-row"><div><span className="eyebrow">YOUR TARGET UNIVERSE</span><h1>Companies</h1><p>Import your company list from Excel. Founders named in the sheet are saved as contacts.</p></div>{canImport&&<div className="action-row"><label className="btn btn-dark" style={importing?{opacity:.6,pointerEvents:'none'}:undefined}><Upload size={15}/> {importing?'Importing…':'Import Companies'}<input hidden type="file" accept=".xlsx,.xls,.csv" disabled={importing} onChange={importFile}/></label></div>}</div>
+     <div className="surface"><div className="table-toolbar"><div className="searchbox"><Search size={16}/><input placeholder="Search companies…" value={search} onChange={e=>setSearch(e.target.value)}/></div></div><div className="company-table">{companyFiltered.map(c=><div className="company-row" key={c.id}><div className="company-symbol">{(c.name||'?').slice(0,1).toUpperCase()}</div><div className="company-name"><b>{c.name}</b><small>{c.website||c.country||'Add company details'}</small></div><div className="company-type">{c.sector||'Sector not set'}</div><div className="company-contact">Priority {c.priority||3}</div><div className="company-links">{c.website&&<a href={c.website.startsWith('http')?c.website:'https://'+c.website} target="_blank" rel="noreferrer"><Globe2 size={15}/></a>}{c.linkedin_url&&<a href={c.linkedin_url} target="_blank" rel="noreferrer" title="Company on LinkedIn"><Linkedin size={15}/></a>}{!contactCompanyIds.has(c.id)&&<a className="subtle-link" href={'https://www.linkedin.com/search/results/people/?keywords='+encodeURIComponent(c.name+' Founder CEO')} target="_blank" rel="noreferrer">Find founder</a>}</div></div>)}{!companyFiltered.length&&<div className="empty-state"><Building2 size={25}/><b>No companies yet</b><span>{canImport?'Use “Import Companies” to load your Excel list.':'Company records will appear here after the authorised import.'}</span></div>}</div></div>
     </>}
     {page==='contacts'&&<>
      <div className="page-title-row"><div><span className="eyebrow">PEOPLE BEFORE PIPELINES</span><h1>Contacts</h1><p>Founders, CEOs, CTOs, product leaders and hiring decision makers.</p></div></div>
-     <div className="surface"><div className="company-table">{data.contacts.map(c=>{const company=companyFor(c.company_id),quality=scoreContact(c,company);return <div className="company-row" key={c.id}><div className="company-symbol"><Users size={17}/></div><div className="company-name"><b>{c.first_name} {c.last_name||''}</b><small>{c.role||'Role not set'} · {company?.name||'Company'}</small></div><div className="company-type">Quality {quality}/100</div><div className="company-contact">{c.email_verified?'Email verified':c.email?'Email unverified':'No email'}</div><div className="company-links">{c.linkedin_url&&<a href={c.linkedin_url} target="_blank" rel="noreferrer"><Linkedin size={15}/></a>}{c.email&&<a href={'mailto:'+c.email}><Mail size={15}/></a>}</div></div>;})}{!data.contacts.length&&<div className="empty-state"><Users size={25}/><b>Your network starts here</b><span>Contacts are created automatically from the authorised Excel import.</span></div>}</div></div>
+     <div className="surface"><div className="company-table">{data.contacts.map(c=>{const company=companyFor(c.company_id),quality=scoreContact(c,company);return <div className="company-row" key={c.id}><div className="company-symbol"><Users size={17}/></div><div className="company-name"><b>{c.first_name} {c.last_name||''}</b><small>{c.role||'Role not set'} · {company?.name||'Company'}</small></div><div className="company-type">Quality {quality}/100</div><div className="company-contact">{c.email_verified?'Email verified':c.email?'Email unverified':'No email'}</div><div className="company-links">{c.linkedin_url&&<a href={c.linkedin_url} target="_blank" rel="noreferrer"><Linkedin size={15}/></a>}{c.email&&<a href={'mailto:'+c.email}><Mail size={15}/></a>}</div></div>;})}{!data.contacts.length&&<div className="empty-state"><Users size={25}/><b>Your network starts here</b><span>Founders named in your imported company list appear here.</span></div>}</div></div>
     </>}
     {page==='outreach'&&<>
      <div className="page-title-row"><div><span className="eyebrow">RELEVANCE IS YOUR ADVANTAGE</span><h1>Message studio</h1><p>Use real research to create and save message variants.</p></div></div>
