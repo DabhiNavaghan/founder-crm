@@ -1,14 +1,18 @@
 // Daily refresh (Vercel Cron, see vercel.json). Finds US YC companies that are not in the catalog yet,
 // reads each one's public YC page and homepage, and hands the rows to ingest_companies().
+// Then adds a "Launch HN <year>" badge to listed companies that launched on Hacker News in the last days (best effort:
+// if Hacker News is down or the step runs out of time, the YC refresh above is unaffected).
 // Protected by CRON_SECRET: Vercel sends it as "Authorization: Bearer <secret>" on cron runs.
 import { timingSafeEqual } from 'node:crypto';
 import { rpc } from '../_lib/db.js';
 import { usCompanies, diffSlugs, parseYcPage, scanSite, buildRow } from '../_lib/yc.js';
+import { launchHnUrl, launchRows } from '../_lib/sources/hn.js';
 
 const INDEX_URL = 'https://yc-oss.github.io/api/companies/all.json';
 const UA = 'FoundReachBot/1.0 (+https://foundreach.navaghandabhi.dev)';
 const MAX_NEW = 25;       // companies looked at per run
 const BUDGET_MS = 40000;  // stop starting new work after this; the function limit is 60s
+const EXTRA_BY_MS = 50000; // the optional Launch HN step is skipped if the run is already this old
 
 async function getText(url, { timeout, limit = 1500000 }) {
   const r = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'text/html,application/json;q=0.9,*/*;q=0.5', 'Accept-Language': 'en-US,en;q=0.9' }, redirect: 'follow', signal: AbortSignal.timeout(timeout) });
@@ -56,6 +60,8 @@ export default async function handler(req, res) {
   if (!authorised(req)) return res.status(401).json({ error: 'Unauthorized' });
   const started = Date.now(), secret = process.env.CRON_SECRET;
   try {
+    // Asked for up front, alongside the index; a failure here is remembered, never thrown.
+    const launches = getText(launchHnUrl(), { timeout: 6000, limit: 2000000 }).then(r => JSON.parse(r.text).hits).catch(() => null);
     const [index, known] = await Promise.all([
       getText(INDEX_URL, { timeout: 25000, limit: 80000000 }).then(r => JSON.parse(r.text)),
       rpc('cron_known_slugs', { p_secret: secret }, { timeout: 15000 }),
@@ -75,7 +81,16 @@ export default async function handler(req, res) {
     };
     await Promise.all(Array.from({ length: 6 }, worker));
     const result = await rpc('ingest_companies', { p_secret: secret, p_rows: rows, p_yc_total: target - rows.filter(r => r.skip).length, p_tracked: tracked }, { timeout: 15000 });
-    return res.status(200).json({ ok: true, yc_total: us.length, tracked_before: tracked, missing: missing.length, looked_at: next, page_failed: failed, not_us_or_gone: rows.filter(r => r.skip).length, ...result, ms: Date.now() - started });
+    let launch_hn = 'unavailable';
+    try {
+      const hits = await launches;
+      if (hits && Date.now() - started < EXTRA_BY_MS) {
+        const badgeRows = launchRows(hits, us);
+        const out = badgeRows.length ? await rpc('ingest_catalog', { p_secret: secret, p_rows: badgeRows }, { timeout: Math.max(1000, Math.min(6000, 57000 - (Date.now() - started))) }) : { badged: 0 };
+        launch_hn = { posts: hits.length, matched: badgeRows.length, badged: out?.badged || 0 };
+      } else if (hits) launch_hn = 'skipped (out of time)';
+    } catch (e) { console.error('FoundReach Launch HN step failed', e?.status || '', e?.code || '', e?.message); launch_hn = 'failed'; }
+    return res.status(200).json({ ok: true, launch_hn, yc_total: us.length, tracked_before: tracked, missing: missing.length, looked_at: next, page_failed: failed, not_us_or_gone: rows.filter(r => r.skip).length, ...result, ms: Date.now() - started });
   } catch (e) {
     console.error('FoundReach refresh error', e?.status || '', e?.code || '', e?.message);
     return res.status(e?.status === 401 || e?.code === '28000' ? 500 : 502).json({ ok: false, error: e?.code === '28000' ? 'The database rejected the cron secret. Check app_secrets.' : 'Refresh failed. See the function log.' });

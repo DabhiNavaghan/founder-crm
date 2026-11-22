@@ -1,0 +1,52 @@
+/* FoundReach design tokens. Shared by public pages and the signed-in app.
+   Light is the default. Dark applies from the OS setting unless <html data-theme="light">,
+   or always with <html data-theme="dark">. */
+:root{
+color-scheme:light;
+/* colour */
+--bg:#f6f7f3;--surface:#fff;--soft:#eef0e8;--hover:#fafbf7;
+--ink:#202a31;--text:#222923;--body:#333d35;--muted:#59645a;
+--line:#e3e7dc;--field-line:#828c7a;
+--accent:#c9f15a;--on-accent:#17210a;--accent-soft:#ecf7c8;--accent-line:#b5cf5e;--accent-ink:#34490f;
+--primary:#202a31;--on-primary:#fff;--primary-hover:#34424c;
+--band:#202a31;--on-band:#f3f5ee;--on-band-muted:#b9c2b5;
+--warn-soft:#fdf0d9;--warn-ink:#6b4400;
+--overlay:#11171b99;
+/* type: one family, three weights (400 500 700) */
+--font:'DM Sans',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+--t-xs:.75rem;--t-sm:.8125rem;--t-md:.9375rem;--t-base:1rem;--t-lg:1.125rem;--t-xl:1.375rem;
+--t-h1:clamp(1.75rem,6vw,2.5rem);--t-display:clamp(2.125rem,8vw,3.75rem);
+/* space (4px base), radius, shadow, layout */
+--s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--s6:32px;--s7:48px;--s8:72px;
+--r-s:10px;--r:14px;--r-l:22px;--r-pill:99px;
+--shadow-1:0 1px 2px #1721140f,0 6px 16px -8px #1721141f;
+--shadow-2:0 2px 4px #17211414,0 24px 48px -16px #17211440;
+--wrap:1200px;--gut:16px;--tap:44px;
+}
+@media (prefers-color-scheme:dark){
+:root:not([data-theme=light]){
+color-scheme:dark;
+--bg:#11171b;--surface:#192127;--soft:#222c33;--hover:#1e272e;
+--ink:#f3f5ee;--text:#e6e9e1;--body:#cdd3c9;--muted:#9da79a;
+--line:#2a353c;--field-line:#6f7b74;
+--accent-soft:#2a3613;--accent-line:#56701c;--accent-ink:#d5f37e;
+--primary:#c9f15a;--on-primary:#17210a;--primary-hover:#d8f77f;
+--band:#192127;--on-band:#f3f5ee;--on-band-muted:#9da79a;
+--warn-soft:#3a2c0d;--warn-ink:#f3d28a;
+--overlay:#000000a6;
+--shadow-1:0 1px 2px #0006;--shadow-2:0 24px 48px -16px #000c;
+}
+}
+:root[data-theme=dark]{
+color-scheme:dark;
+--bg:#11171b;--surface:#192127;--soft:#222c33;--hover:#1e272e;
+--ink:#f3f5ee;--text:#e6e9e1;--body:#cdd3c9;--muted:#9da79a;
+--line:#2a353c;--field-line:#6f7b74;
+--accent-soft:#2a3613;--accent-line:#56701c;--accent-ink:#d5f37e;
+--primary:#c9f15a;--on-primary:#17210a;--primary-hover:#d8f77f;
+--band:#192127;--on-band:#f3f5ee;--on-band-muted:#9da79a;
+--warn-soft:#3a2c0d;--warn-ink:#f3d28a;
+--overlay:#000000a6;
+--shadow-1:0 1px 2px #0006;--shadow-2:0 24px 48px -16px #000c;
+}
+@media (min-width:600px){:root{--gut:24px}}

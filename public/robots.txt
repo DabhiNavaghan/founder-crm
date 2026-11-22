@@ -1,6 +1,9 @@
 User-agent: *
 Allow: /
 Disallow: /api/
+Disallow: /app/
 Disallow: /remove
+Disallow: /*?save=
+Disallow: /*?draft=
 
 Sitemap: https://foundreach.navaghandabhi.dev/sitemap.xml

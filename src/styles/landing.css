@@ -1,0 +1,48 @@
+/* FoundReach landing page only. Needs tokens.css and directory-v2.css. */
+.lp-hero{padding:40px 0 28px}
+.lp-hero h1{margin-top:10px;max-width:17ch;font:700 var(--t-display)/1.02 var(--font);letter-spacing:-.04em;color:var(--ink)}
+.lp-hero .sub{margin-top:16px;font-size:var(--t-lg)}
+.search-lg{display:flex;gap:8px;max-width:640px;margin:24px 0 14px}
+.search-lg .field{min-height:56px;padding:8px 16px;font-size:1.0625rem}
+.search-lg .btn{min-height:56px}
+.sec-top{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:0 16px;margin-bottom:var(--s3)}
+.sec-top .sec-h{margin:0}
+.more{display:inline-flex;align-items:center;min-height:var(--tap);font-weight:500;font-size:var(--t-md)}
+.steps{display:grid;gap:12px;counter-reset:step}
+.steps li{position:relative;padding:16px 16px 16px 64px;border:1px solid var(--line);border-radius:var(--r);background:var(--surface);counter-increment:step}
+.steps li::before{content:counter(step);position:absolute;left:16px;top:16px;display:grid;place-items:center;width:36px;height:36px;border-radius:50%;background:var(--accent);color:var(--on-accent);font-weight:700}
+.steps h3,.who h3{font:700 var(--t-lg)/1.3 var(--font);color:var(--ink)}
+.steps p,.who p{margin-top:4px;color:var(--body)}
+.browse{display:grid;gap:var(--s5)}
+.browse h3{margin-bottom:8px;font:700 var(--t-md)/1.3 var(--font);color:var(--muted)}
+.shots{display:grid;gap:16px}
+.shot{border:1px solid var(--line);border-radius:var(--r-l);background:var(--surface);box-shadow:var(--shadow-1);overflow:hidden}
+.shot figcaption{padding:14px 16px;border-top:1px solid var(--line);font-size:var(--t-md);color:var(--body)}
+.shot figcaption b{display:block;color:var(--ink)}
+.shot-ui{display:grid;gap:10px;padding:16px;font-size:.875rem}
+.shot-row{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-s)}
+.shot-row b{display:block;color:var(--ink)}
+.shot-row span{flex:1;min-width:0;color:var(--muted)}
+.shot-row i{flex:none;padding:6px 10px;border-radius:8px;background:var(--primary);color:var(--on-primary);font-style:normal;font-weight:700;font-size:var(--t-sm)}
+.shot-draft{padding:12px 14px;border-radius:var(--r-s);background:var(--bg);color:var(--body);line-height:1.55}
+.who .card .more{margin-top:4px}
+.policy{display:grid;gap:12px}
+.band{margin-top:var(--s8);padding:var(--s7) 0;background:var(--band);color:var(--on-band)}
+.band h2{max-width:18ch;font:700 var(--t-h1)/1.1 var(--font);letter-spacing:-.03em}
+.band p{margin:10px 0 20px;color:var(--on-band-muted)}
+.btn-accent{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.btn-accent:hover{background:#d8f77f;border-color:#d8f77f}
+.band :focus-visible{outline-color:var(--accent)}
+.band+.foot{margin-top:0;border-top:0}
+@media (min-width:600px){
+.lp-hero{padding:72px 0 40px}
+}
+@media (min-width:900px){
+.lp-new .sim{grid-template-columns:repeat(4,1fr)}
+.steps{grid-template-columns:repeat(3,1fr)}
+.steps li{padding:64px 20px 20px}
+.steps li:not(:last-child)::after{content:"";position:absolute;left:64px;right:-28px;top:33px;height:2px;background:var(--accent-line)}
+.browse{grid-template-columns:repeat(3,1fr)}
+.shots{grid-template-columns:1fr 1fr}
+.policy{grid-template-columns:minmax(0,1fr) auto;align-items:center}
+}

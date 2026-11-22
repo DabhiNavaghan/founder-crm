@@ -1,6 +1,11 @@
-# Founder Outreach CRM
+# FoundReach
 
-A responsive, single-user CRM for managing founder and product-leader outreach.
+A public directory of US startups (server-rendered pages under `api/`) and a signed-in outreach desk (the Vite + React app under `src/`).
+
+- `/` is the landing page: static HTML in `index.html`, with live counts filled in by `src/landing/enhance.js`.
+- `/app/today`, `/app/pipeline`, `/app/pipeline/:companyId`, `/app/studio?contact=:id`, `/app/profile` are the signed-in app (`src/app/`), routed by `src/lib/router.jsx`.
+- `/?save=slug` and `/?draft=slug&contact=id` (links on the public pages) save a directory company into the signed-in user's pipeline.
+- Sign-in is Clerk; data is Supabase with row-level security. SQL lives in `supabase/migrations/` and is applied in order.
 
 ## Run locally
 
@@ -9,19 +14,12 @@ npm install
 npm run dev
 ```
 
+Copy `.env.example` to `.env.local` and fill in the keys first.
+
 ## Build
 
 ```bash
 npm run build
-npm run preview
 ```
 
-## Current MVP notes
-
-- Data is stored in browser localStorage. This is a single-browser MVP, not a cloud-synced multi-user system.
-- LinkedIn workflow is manual: the app can prepare/copy messages, but does not scrape or automate LinkedIn activity.
-- Email sending and live LLM integration are not configured in this MVP; message generation uses local templates.
-
-## Deploy
-
-The project is configured for Vite and can be deployed to Vercel with the default build command `npm run build` and output directory `dist`.
+The output directory is `dist`. Deployed on Vercel.

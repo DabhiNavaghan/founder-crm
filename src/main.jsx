@@ -1,44 +1,116 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ClerkProvider, SignInButton, SignUpButton, UserButton, useAuth, useClerk, useUser } from '@clerk/react';
-import { createClient } from '@supabase/supabase-js';
-import { ArrowUpRight, ArrowRight, Building2, Users, Send, CalendarClock, Sparkles, Search, Plus, Upload, Download, LayoutDashboard, Target, BarChart3, Settings, Menu, X, CheckCircle2, Globe2, Linkedin, Mail, Zap, ShieldCheck, Clock3 } from 'lucide-react';
-import * as XLSX from 'xlsx';
-import './styles.css';
-import { Workspace } from './Workspace.jsx';
+import { ClerkProvider, useAuth, useClerk, useUser } from '@clerk/react';
+import { navigate, useRoute } from './lib/router.jsx';
+import { internalPath } from './lib/routes.js';
+import { parseIntent, peekIntent, storeIntent, stripIntent } from './lib/intent.js';
+import { hadSession, rememberSession, setView } from './lib/session.js';
+import { enhanceLanding } from './landing/enhance.js';
+import { Mark } from './app/ui.jsx';
 
 const env = import.meta.env;
-const supabaseReady = Boolean(env.VITE_SUPABASE_URL && env.VITE_SUPABASE_PUBLISHABLE_KEY);
-const supabase = supabaseReady ? createClient(env.VITE_SUPABASE_URL, env.VITE_SUPABASE_PUBLISHABLE_KEY, { accessToken: async () => window.__founderflowToken?.() ?? null }) : null;
-const navItems = [{id:'overview',label:'Overview',icon:LayoutDashboard},{id:'companies',label:'Companies',icon:Building2},{id:'contacts',label:'Contacts',icon:Users},{id:'outreach',label:'Outreach',icon:Send},{id:'queue',label:'Daily queue',icon:CalendarClock},{id:'analytics',label:'Analytics',icon:BarChart3},{id:'profile',label:'My profile',icon:Settings}];
-const empty = {companies:[],contacts:[],messages:[],events:[],profile:null};
-// A "Draft a message" link on a public directory page arrives as /?draft=company-slug&contact=contact-id.
-// The intent is kept for this tab so it survives the sign-in step; the workspace picks it up once signed in.
-const DRAFT_KEY='foundreach_draft';
-const draftInUrl=()=>{const p=new URLSearchParams(window.location.search),slug=(p.get('draft')||'').toLowerCase();return /^[a-z0-9][a-z0-9_-]{0,99}$/.test(slug)?{slug,contact:p.get('contact')||''}:null;};
-try{const d=draftInUrl();if(d)sessionStorage.setItem(DRAFT_KEY,JSON.stringify(d));}catch{}
-function AppShell() {
- const {getToken,isLoaded,isSignedIn}=useAuth();
- const {user}=useUser();
- const clerk=useClerk();
- // Signed out and arriving from a directory page: open sign-in straight away.
- useEffect(()=>{if(isLoaded&&!isSignedIn&&draftInUrl())clerk.openSignIn();},[isLoaded,isSignedIn]);
- const [waited,setWaited]=useState(false);
- useEffect(()=>{window.__founderflowToken=()=>getToken();},[getToken]);
- useEffect(()=>{if(isLoaded)rememberSession(isSignedIn);},[isLoaded,isSignedIn]);
- useEffect(()=>{const t=window.setTimeout(()=>setWaited(true),8000);return()=>window.clearTimeout(t);},[]);
- // While Clerk is still starting, returning users see a loader instead of a flash of the landing page.
- if(!isLoaded)return hadSession()&&!waited?<Splash/>:<Landing/>;
- if(!isSignedIn)return <Landing/>;
- if(!supabaseReady)return <div className="setup-screen"><div className="logo-mark">F</div><h1>Your workspace is being prepared.</h1><p>FounderFlow is waiting for its database connection.</p><UserButton/></div>;
- return <Workspace supabase={supabase} user={user} getToken={getToken}/>;
+const clerkKey = env.VITE_CLERK_PUBLISHABLE_KEY;
+// The signed-in app (and the database client) is only downloaded by people who sign in.
+const Desk = lazy(() => import('./app/Desk.jsx'));
+
+// /?save=slug and /?draft=slug&contact=id: remember what the visitor wanted, then clean the address bar.
+const arrived = parseIntent(window.location.search);
+if (arrived) {
+  storeIntent(window.sessionStorage, arrived);
+  window.history.replaceState(null, '', window.location.pathname + stripIntent(window.location.search) + window.location.hash);
 }
-const SESSION_HINT='founderflow_signed_in';
-function hadSession(){try{if(localStorage.getItem(SESSION_HINT)==='1')return true;}catch{}return /(?:^|; )__client_uat[^=]*=[1-9]/.test(document.cookie);}
-function rememberSession(on){try{on?localStorage.setItem(SESSION_HINT,'1'):localStorage.removeItem(SESSION_HINT);}catch{}}
-function Splash(){return <div className="setup-screen"><div className="logo-mark">F</div><p>Loading your workspace…</p></div>;}
-function Landing(){return <main className="landing"><nav className="landing-nav"><a className="landing-brand" href="#"><span className="logo-mark">F</span> founderflow</a><div className="landing-nav-links"><a href="/companies">Browse directory</a>{env.VITE_CLERK_PUBLISHABLE_KEY?<SignInButton mode="modal"><button className="nav-signin">Sign in</button></SignInButton>:<button className="nav-signin" disabled>Sign in</button>}</div></nav><section className="landing-hero"><div className="landing-copy"><div className="eyebrow"><span className="tiny-dot"/> THE RELATIONSHIP OS FOR WHAT'S NEXT</div><h1>Your next opportunity<br/>starts with <em>a conversation.</em></h1><p>FounderFlow helps ambitious people build genuine relationships with founders and decision makers—through better research, thoughtful outreach and consistent follow-through.</p><div className="landing-cta">{env.VITE_CLERK_PUBLISHABLE_KEY?<SignInButton mode="modal"><button className="btn btn-dark btn-large">Sign in <ArrowUpRight size={17}/></button></SignInButton>:<button className="btn btn-dark btn-large" disabled>Sign in <ArrowUpRight size={17}/></button>}<a className="watch-link" href="/companies">Browse directory <ArrowRight size={15}/></a></div><div className="proof-line"><ShieldCheck size={15}/> Private by design <span/> No spam. No scraping. Just thoughtful outreach.</div></div><div className="landing-art"><div className="art-window"><div className="window-top"><span/><span/><span/><b>YOUR RELATIONSHIP PIPELINE</b></div><div className="art-stat"><small>THIS WEEK'S MOMENTUM</small><strong>12 <i>conversations started</i></strong><div className="art-bars"><i/><i/><i/><i/><i/><i/><i/></div></div><div className="art-contact"><div className="art-avatar">JM</div><div><b>Jordan Mitchell</b><small>Co-founder · Product studio</small></div><span className="ready-pill">RESEARCHED</span></div><div className="art-note"><Sparkles size={16}/><div><b>One detail makes it personal.</b><small>“Loved your recent launch of…”</small></div></div></div><div className="art-stamp">LESS BLASTING<br/><b>MORE BELONGING.</b></div></div></section><section className="landing-ribbon"><span>RESEARCH WITH INTENTION</span><i/><span>WRITE WITH CONTEXT</span><i/><span>FOLLOW THROUGH</span><i/><span>BUILD REAL CONNECTIONS</span></section><section id="how" className="landing-section"><div className="eyebrow">A BETTER WAY TO REACH OUT</div><h2>Less noise. More <em>signal.</em></h2><div className="feature-grid"><article><span>01</span><Search/><h3>Know who you're reaching</h3><p>Keep companies, people, roles and real reasons to connect together—not scattered across tabs.</p></article><article><span>02</span><Sparkles/><h3>Make every message matter</h3><p>Use specific product details, recent updates and your own strengths to create relevant outreach.</p></article><article><span>03</span><CalendarClock/><h3>Follow through thoughtfully</h3><p>A focused daily queue, clear next steps and useful analytics help relationships grow over time.</p></article></div></section><section id="features" className="landing-bottom"><div><span className="eyebrow">YOUR NEXT CHAPTER ISN'T AN APPLICATION FORM</span><h2>Start with a human<br/><em>conversation.</em></h2></div>{env.VITE_CLERK_PUBLISHABLE_KEY?<SignInButton mode="modal"><button className="btn btn-light btn-large">Sign in <ArrowUpRight size={16}/></button></SignInButton>:<button className="btn btn-light btn-large" disabled>Sign in <ArrowUpRight size={16}/></button>}</section><footer className="landing-footer">FOUNDERFLOW · <a href="/privacy" style={{color:'inherit'}}>PRIVACY</a> <span>Thoughtful outreach, by design.</span></footer></main>}
-function Outreach({data,user,getToken,saveRow,notify}){const [contact,setContact]=useState(''),[context,setContext]=useState(''),[channel,setChannel]=useState('LinkedIn'),[draft,setDraft]=useState(null),[busy,setBusy]=useState(false);const generate=async()=>{const person=data.contacts.find(c=>c.id===contact),company=data.companies.find(c=>c.id===person?.company_id);if(!person||!company){notify('Add a company and contact first.');return;}if(context.trim().length<20){notify('Add a specific product detail, news item or reason to connect.');return;}setBusy(true);try{const token=await getToken();const r=await fetch('/api/generate-message',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({contact:person,company,context,channel,profile:data.profile})});const body=await r.json();if(!r.ok)throw new Error(body.error||'Message generation unavailable');setDraft(body);}catch(e){notify(e.message);}finally{setBusy(false);}};return <><div className="page-title-row"><div><span className="eyebrow">RELEVANCE IS YOUR ADVANTAGE</span><h1>Message studio</h1><p>Give the AI real context. Get a first message that sounds like you.</p></div></div><div className="studio-grid"><section className="surface studio-form"><div className="studio-step"><span>01</span><div><b>Who are you reaching?</b><small>Choose a person and channel.</small></div></div><label className="form-field">Contact<select value={contact} onChange={e=>setContact(e.target.value)}><option value="">Select a contact</option>{data.contacts.map(c=><option value={c.id}>{c.first_name} {c.last_name||''} · {data.companies.find(x=>x.id===c.company_id)?.name||''}</option>)}</select></label><label className="form-field">Channel<select value={channel} onChange={e=>setChannel(e.target.value)}><option>LinkedIn</option><option>Email</option></select></label><div className="studio-step"><span>02</span><div><b>Bring one specific detail</b><small>Don't make the model guess. Give it something real.</small></div></div><label className="form-field">Product detail, recent news, job opening, feature or post<textarea rows="6" placeholder="Example: I noticed your team recently launched a new mobile checkout experience. The guest checkout flow and saved payment options stood out because…" value={context} onChange={e=>setContext(e.target.value)}/></label><button className="btn btn-dark full-btn" disabled={busy} onClick={generate}><Sparkles size={16}/>{busy?'Writing your message…':'Generate a personal message'}</button></section><section className="surface draft-panel"><span className="eyebrow">YOUR DRAFT</span>{draft?<><div className="score-line"><b>Relevance score</b><strong>{draft.score}/10</strong></div>{draft.score<7&&<div className="research-warning">Needs more research — add stronger company or contact context.</div>}{draft.subject&&<div className="draft-subject"><small>SUBJECT</small>{draft.subject}</div>}<div className="draft-copy">{draft.message}</div>{draft.improvement&&<p className="improvement"><b>Improve:</b> {draft.improvement}</p>}<button className="btn btn-light" onClick={()=>navigator.clipboard.writeText((draft.subject?'Subject: '+draft.subject+'\n\n':'')+draft.message)}>Copy message</button></>:<div className="empty-state"><Sparkles size={26}/><b>A message worth replying to.</b><span>Your tailored draft and relevance score will appear here.</span></div>}</section></div></>}
-function Profile({data,user,saveRow,notify}){const [form,setForm]=useState(data.profile||{});useEffect(()=>setForm(data.profile||{}),[data.profile]);const fields=[['headline','Your role / professional headline'],['services','What services or expertise do you offer?'],['experience','Experience and proof points'],['audience','Who do you want to reach?'],['industries','Target industries'],['value_proposition','What makes your work valuable?'],['tone','Preferred tone'],['cta','Preferred call to action']];return <><div className="page-title-row"><div><span className="eyebrow">YOUR VOICE, YOUR VALUE</span><h1>My outreach profile</h1><p>Teach FounderFlow what you do. AI will use this context—not a fixed persona.</p></div></div><div className="surface profile-form">{fields.map(([k,l])=><label className="form-field">{l}<textarea rows={k==='services'||k==='experience'?3:2} value={form[k]||''} onChange={e=>setForm(p=>({...p,[k]:e.target.value}))}/></label>)}<button className="btn btn-dark" onClick={async()=>{await saveRow('sender_profiles',{...form,owner_id:user.id});notify('Profile saved');}}>Save my profile <ArrowRight size={15}/></button></div></>}
-function Root(){const key=env.VITE_CLERK_PUBLISHABLE_KEY;if(!key)return <Landing/>;return <ClerkProvider publishableKey={key} afterSignOutUrl="/"><AppShell/></ClerkProvider>;}
-createRoot(document.getElementById('root')).render(<Root/>);
+const intentWaiting = () => { try { return Boolean(peekIntent(window.sessionStorage)); } catch { return false; } };
+
+function Splash({ text = 'Opening your desk…' }) {
+  return <div className="boot" role="status"><Mark size={44} /><p>{text}</p></div>;
+}
+
+function SignInGate({ onSignIn, ready }) {
+  return <div className="boot">
+    <Mark size={44} />
+    <h1>Sign in to open your desk</h1>
+    <p>Your saved companies, drafts and follow-ups are waiting. Browsing the directory needs no account.</p>
+    <div className="actions">
+      <button className="btn btn-dark" type="button" onClick={onSignIn} disabled={!ready}>Sign in</button>
+      <a className="btn" href="/companies">Browse the directory</a>
+    </div>
+  </div>;
+}
+
+function Shell() {
+  const { isLoaded, isSignedIn, getToken } = useAuth();
+  const { user } = useUser();
+  const clerk = useClerk();
+  const route = useRoute();
+  const [waited, setWaited] = useState(false);
+  const asked = useRef(false); // sign-in was requested before Clerk finished loading
+  const opened = useRef(false);
+
+  const openSignIn = () => {
+    if (!isLoaded) { asked.current = true; return; }
+    if (!isSignedIn) clerk.openSignIn({});
+  };
+
+  useEffect(() => { const t = window.setTimeout(() => setWaited(true), 8000); return () => window.clearTimeout(t); }, []);
+  useEffect(() => { if (isLoaded) rememberSession(isSignedIn); }, [isLoaded, isSignedIn]);
+  useEffect(() => { if (route.redirect) navigate(route.redirect, { replace: true }); }, [route.redirect]);
+  // Signed-in visitors never see the landing page.
+  useEffect(() => { if (isLoaded && isSignedIn && route.name === 'landing') navigate('/app/today', { replace: true }); }, [isLoaded, isSignedIn, route.name]);
+  // Signed out with something to do (a Save/Draft link, a click on Sign in, or an app address): open sign-in once.
+  useEffect(() => {
+    if (!isLoaded || isSignedIn || opened.current) return;
+    if (asked.current || intentWaiting() || route.name !== 'landing') { opened.current = true; clerk.openSignIn({}); }
+  }, [isLoaded, isSignedIn, route.name]);
+  // "Sign in" links on the static landing page open the sign-in dialog in place.
+  useEffect(() => {
+    const click = e => {
+      const a = e.target.closest?.('#landing a[data-signin], #landing a[data-auth]');
+      if (!a || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      openSignIn();
+    };
+    document.addEventListener('click', click);
+    return () => document.removeEventListener('click', click);
+  });
+
+  const onLanding = route.name === 'landing';
+  // While the session is still loading, a returning user sees a loader instead of a flash of the landing page.
+  const pending = !isLoaded && (onLanding ? hadSession() && !waited : true);
+  const showLanding = onLanding && !pending && !(isLoaded && isSignedIn);
+  useLayoutEffect(() => {
+    setView(showLanding ? 'landing' : 'app');
+    if (showLanding) { document.title = 'FoundReach: find any startup, reach the people who run it'; enhanceLanding(); }
+  }, [showLanding]);
+
+  if (showLanding) return null;
+  if (!isLoaded) return waited ? <SignInGate ready={false} onSignIn={openSignIn} /> : <Splash />;
+  if (!isSignedIn) return <SignInGate ready onSignIn={() => clerk.openSignIn({})} />;
+  if (onLanding) return <Splash />;
+  // Signing out must not be mistaken for "signed out, wants in": no sign-in dialog on the way out.
+  const signOut = () => { opened.current = true; clerk.signOut({ redirectUrl: '/' }); };
+  return <Suspense fallback={<Splash />}><Desk user={user} getToken={getToken} route={route} onSignOut={signOut} onAccount={() => clerk.openUserProfile()} /></Suspense>;
+}
+
+function Unconfigured() {
+  const route = useRoute();
+  const onLanding = route.name === 'landing';
+  useLayoutEffect(() => { setView(onLanding ? 'landing' : 'app'); if (onLanding) enhanceLanding(); }, [onLanding]);
+  if (onLanding) return null;
+  return <div className="boot"><Mark size={44} /><h1>Sign-in is not set up here</h1><p>This copy of FoundReach has no sign-in key. The directory still works.</p><a className="btn" href="/companies">Browse the directory</a></div>;
+}
+
+// Clerk asks the app to navigate after sign-in and sign-out. Its own off-site pages get a normal page load.
+function clerkGo(to, replace) {
+  if (internalPath(to, window.location.origin) !== null) navigate(to, { replace });
+  else if (/^https:\/\//i.test(String(to))) window.location.assign(to);
+}
+
+function Root() {
+  if (!clerkKey) return <Unconfigured />;
+  return <ClerkProvider publishableKey={clerkKey} afterSignOutUrl="/" signInFallbackRedirectUrl="/app/today" signUpFallbackRedirectUrl="/app/today"
+    routerPush={to => clerkGo(to, false)} routerReplace={to => clerkGo(to, true)}>
+    <Shell />
+  </ClerkProvider>;
+}
+
+createRoot(document.getElementById('root')).render(<Root />);

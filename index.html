@@ -1,13 +1,228 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#202a31" />
-    <title>FounderFlow — Outreach CRM</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f6f7f3" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#11171b" media="(prefers-color-scheme: dark)">
+<title>FoundReach: find any startup, reach the people who run it</title>
+<meta name="description" content="A free directory of US startups with the links that matter: website, careers, contact page and the founders' LinkedIn. Sign in to see emails and draft your first message.">
+<link rel="canonical" href="https://foundreach.navaghandabhi.dev/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="FoundReach">
+<meta property="og:title" content="FoundReach: find any startup, reach the people who run it">
+<meta property="og:description" content="A free directory of US startups with the links that matter: website, careers, contact page and the founders' LinkedIn.">
+<meta property="og:url" content="https://foundreach.navaghandabhi.dev/">
+<meta property="og:image" content="https://foundreach.navaghandabhi.dev/brand/og-default.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="FoundReach: find any startup, reach the people who run it">
+<meta name="twitter:description" content="A free directory of US startups with the links that matter: website, careers, contact page and the founders' LinkedIn.">
+<meta name="twitter:image" content="https://foundreach.navaghandabhi.dev/brand/og-default.png">
+<link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
+<link rel="manifest" href="/brand/site.webmanifest">
+<script>
+// Decide before first paint whether this visit shows the landing page or the signed-in app,
+// so returning users never see the landing page flash. The old sign-in hint is carried over once.
+(function () {
+  var d = document.documentElement, p = location.pathname, hint = false;
+  try {
+    var old = 'founder' + 'flow_signed_in', key = 'foundreach_signed_in';
+    if (localStorage.getItem(old) === '1') localStorage.setItem(key, '1');
+    localStorage.removeItem(old);
+    hint = localStorage.getItem(key) === '1';
+  } catch (e) {}
+  var session = hint || /(?:^|; )__client_uat[^=]*=[1-9]/.test(document.cookie);
+  var app = p.indexOf('/app') === 0 || ((p === '/' || p === '/index.html') && session);
+  d.setAttribute('data-view', app ? 'app' : 'landing');
+  d.className += ' js';
+})();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&amp;display=swap">
+<link rel="stylesheet" href="/src/styles/index.css">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@graph":[
+{"@type":"WebSite","@id":"https://foundreach.navaghandabhi.dev/#website","url":"https://foundreach.navaghandabhi.dev/","name":"FoundReach","description":"A free directory of US startups with the links to reach the people who run them.","publisher":{"@id":"https://foundreach.navaghandabhi.dev/#org"},"potentialAction":{"@type":"SearchAction","target":{"@type":"EntryPoint","urlTemplate":"https://foundreach.navaghandabhi.dev/companies?q={search_term_string}"},"query-input":"required name=search_term_string"}},
+{"@type":"Organization","@id":"https://foundreach.navaghandabhi.dev/#org","name":"FoundReach","url":"https://foundreach.navaghandabhi.dev/","logo":"https://foundreach.navaghandabhi.dev/brand/icon-512.png","slogan":"Every startup, one step from its founders."}
+]}
+</script>
+</head>
+<body>
+<!-- The landing page is plain HTML so it is readable before (and without) JavaScript.
+     src/landing/enhance.js fills in live counts and links; the signed-in app renders into #root. -->
+<div id="landing">
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/"><svg class="brand-logo" viewBox="0 0 247 40" width="173" height="28" role="img" aria-label="FoundReach"><rect x="0" y="0" width="40" height="40" rx="10" fill="#c9f15a"/><path d="M13 27L27 13" fill="none" stroke="#202a31" stroke-width="3.6" stroke-linecap="round"/><circle cx="13" cy="27" r="5" fill="#202a31"/><circle cx="27" cy="13" r="4.4" fill="#c9f15a" stroke="#202a31" stroke-width="3.2"/><path d="M52 32L52 8L65 8M52 19.5L62.5 19.5M84.6 24A8 8 0 0 1 68.6 24A8 8 0 0 1 84.6 24M89.8 16L89.8 25A7 7 0 0 0 103.8 25L103.8 16M103.8 16L103.8 32M109.8 16L109.8 32M109.8 23A7 7 0 0 1 123.8 23L123.8 32M145 24A8 8 0 0 1 129 24A8 8 0 0 1 145 24M145 8L145 32M151 32L151 8L159.5 8A6.5 6.5 0 0 1 159.5 21L151 21M158.5 21L166 32M169.6 24L185.6 24A8 8 0 1 0 183.26 29.66M206 24A8 8 0 0 1 190 24A8 8 0 0 1 206 24M206 16L206 32M224.86 18.34A8 8 0 1 0 224.86 29.66M229.6 8L229.6 32M229.6 23A7 7 0 0 1 243.6 23L243.6 32" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+    <nav class="nav" aria-label="Main">
+      <a class="w" href="/companies">Directory</a>
+      <a href="/new">New</a>
+      <a class="w" href="/hiring">Hiring</a>
+      <a class="w" href="/collections">Collections</a>
+    </nav>
+    <a class="btn" href="/app/today" data-auth>Sign in</a>
+  </div>
+</header>
+
+<main id="main">
+  <!-- 1. Hero -->
+  <section class="wrap lp-hero" aria-labelledby="lp-h">
+    <p class="eyebrow">Every startup, one step from its founders</p>
+    <h1 id="lp-h">Find any startup. Reach the people who run it.</h1>
+    <p class="sub">A free directory of US startups with the links that matter: website, careers, contact page and the founders' LinkedIn. Sign in to see emails and draft your first message.</p>
+    <form class="search-lg" action="/companies" method="get" role="search">
+      <label class="sr-only" for="lp-q">Search by company, sector or keyword</label>
+      <input class="field" id="lp-q" name="q" type="search" placeholder="Search by company, sector or keyword" autocomplete="off">
+      <button class="btn btn-dark" type="submit">Search directory</button>
+    </form>
+    <a class="more" href="/companies">Browse all companies &rarr;</a>
+  </section>
+
+  <!-- 2. Counts strip (live numbers replace these when /api/public/stats answers) -->
+  <section class="wrap lp-new" aria-labelledby="counts-h">
+    <h2 class="sr-only" id="counts-h">The directory in numbers</h2>
+    <a class="facts" href="/new" data-counts>
+      <div><b data-stat="companies">3,300+</b><span>startups</span></div>
+      <div><b data-stat="leaders">5,800+</b><span>founders and leaders</span></div>
+      <div><b data-stat="hiring">Open roles</b><span>hiring now</span></div>
+      <div><b data-stat="new_this_week">Daily</b><span>new this week</span></div>
+    </a>
+    <div data-newest hidden>
+      <div class="sec-top">
+        <h3 class="sec-h">New this week</h3>
+        <a class="more" href="/new">See all new startups &rarr;</a>
+      </div>
+      <ul class="sim" data-newest-list></ul>
+    </div>
+  </section>
+
+  <!-- 3. How it works -->
+  <section class="wrap sec" aria-labelledby="how-h">
+    <h2 class="sec-h" id="how-h">How it works</h2>
+    <ol class="steps">
+      <li><h3>Find</h3><p>Search and filter by sector, city, source and hiring.</p></li>
+      <li><h3>Reach</h3><p>Every page lists the real ways in: careers, contact, LinkedIn, founders.</p></li>
+      <li><h3>Follow through</h3><p>Save companies, draft with AI, and track replies and follow-ups.</p></li>
+    </ol>
+  </section>
+
+  <!-- 4. Browse -->
+  <section class="wrap sec" aria-labelledby="browse-h">
+    <h2 class="sec-h" id="browse-h">Browse the directory</h2>
+    <div class="browse">
+      <div>
+        <h3>By sector</h3>
+        <ul class="pills" data-browse="sectors">
+          <li><a class="pill" href="/sector/b2b">B2B</a></li>
+          <li><a class="pill" href="/sector/healthcare">Healthcare</a></li>
+          <li><a class="pill" href="/sector/industrials">Industrials</a></li>
+          <li><a class="pill" href="/sector/consumer">Consumer</a></li>
+          <li><a class="pill" href="/sector/fintech">Fintech</a></li>
+        </ul>
+      </div>
+      <div>
+        <h3>By city</h3>
+        <ul class="pills" data-browse="cities">
+          <li><a class="pill" href="/city/san-francisco">San Francisco</a></li>
+          <li><a class="pill" href="/city/new-york-city-ny">New York City</a></li>
+          <li><a class="pill" href="/city/los-angeles-ca">Los Angeles</a></li>
+          <li><a class="pill" href="/city/boston">Boston</a></li>
+          <li><a class="pill" href="/city/austin-tx">Austin</a></li>
+        </ul>
+      </div>
+      <div>
+        <h3>By source</h3>
+        <ul class="pills" data-browse="sources">
+          <li><a class="pill" href="/companies">All companies</a></li>
+          <li><a class="pill" href="/new">New this week</a></li>
+          <li><a class="pill" href="/hiring">Hiring now</a></li>
+          <li><a class="pill" href="/collections">Collections</a></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. Product preview. Built from HTML, not screenshots; the inner mock is hidden from assistive tech. -->
+  <section class="wrap sec" aria-labelledby="prev-h">
+    <h2 class="sec-h" id="prev-h">After you sign in</h2>
+    <div class="shots">
+      <figure class="shot">
+        <div class="shot-ui" aria-hidden="true">
+          <div class="shot-row"><span><b>Daniel Okafor</b>Replied yesterday</span><i>Draft reply</i></div>
+          <div class="shot-row"><span><b>Priya Raman</b>Sent 5 days ago, no reply yet</span><i>Follow up</i></div>
+          <div class="shot-row"><span><b>Tidewater Labs</b>Saved, ready to draft</span><i>Draft</i></div>
+        </div>
+        <figcaption><b>Today and Pipeline</b>Your outreach desk: what to send today, and who replied.</figcaption>
+      </figure>
+      <figure class="shot">
+        <div class="shot-ui" aria-hidden="true">
+          <div class="shot-row"><span><b>To: Priya Raman</b>Co-founder and CEO, Lumen Health</span><i>Copy</i></div>
+          <p class="shot-draft">Hi Priya, I read that Lumen bills through existing Medicare codes, which is exactly the objection I hear from clinic directors. I ran cardiology partnerships at a 12-site group and would like to help you open the Southwest. Could we talk for 15 minutes next week?</p>
+        </div>
+        <figcaption><b>Message studio</b>A first message drafted from one real detail and your profile. You edit it and send it yourself.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- 6. Who it's for -->
+  <section class="wrap sec who" aria-labelledby="who-h">
+    <h2 class="sec-h" id="who-h">Who it's for</h2>
+    <div class="cards">
+      <div class="card"><h3>Job seekers</h3><p>Go straight to the founder, not the application queue.</p><a class="more" href="/hiring">Startups hiring now &rarr;</a></div>
+      <div class="card"><h3>Freelancers and agencies</h3><p>Find startups that need you and pitch the person who decides.</p><a class="more" href="/companies">Search the directory &rarr;</a></div>
+      <div class="card"><h3>Founders and sellers</h3><p>Build a focused list and follow up on time.</p><a class="more" href="/new">New this week &rarr;</a></div>
+    </div>
+  </section>
+
+  <!-- 7. Data and removal -->
+  <section class="wrap sec" aria-labelledby="data-h">
+    <div class="card policy">
+      <div>
+        <h2 id="data-h">Data and removal</h2>
+        <p class="lead">Public sources only. No guessed emails. No person pages. Removal on request.</p>
+      </div>
+      <div class="actions" style="margin:0">
+        <a class="btn" href="/about-data">About the data</a>
+        <a class="btn" href="/remove">Remove my information</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- 8. Final call to action -->
+  <section class="band" aria-labelledby="cta-h">
+    <div class="wrap">
+      <h2 id="cta-h">The founder is one step away.</h2>
+      <p>Free to browse. No sign-in to search.</p>
+      <div class="actions">
+        <a class="btn btn-lg btn-accent" href="/companies">Start with the directory</a>
+        <a class="btn btn-lg btn-ghost" href="/app/today" data-signin>Sign in free</a>
+      </div>
+    </div>
+  </section>
+</main>
+<footer class="foot">
+  <div class="wrap">
+    <p class="foot-brand"><svg width="24" height="24" viewBox="0 0 40 40" aria-hidden="true"><rect width="40" height="40" rx="10" fill="#c9f15a"/><path d="M13 27L27 13" fill="none" stroke="#202a31" stroke-width="3.6" stroke-linecap="round"/><circle cx="13" cy="27" r="5" fill="#202a31"/><circle cx="27" cy="13" r="4.4" fill="#c9f15a" stroke="#202a31" stroke-width="3.2"/></svg>Every startup, one step from its founders.</p>
+    <nav class="foot-cols" aria-label="Browse the directory" data-foot-cols hidden></nav>
+    <nav class="foot-nav" aria-label="Footer">
+      <a href="/companies">Directory</a>
+      <a href="/new">New this week</a>
+      <a href="/hiring">Hiring</a>
+      <a href="/collections">Collections</a>
+      <a href="/about-data">About the data</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/remove">Remove or correct my information</a>
+    </nav>
+    <p>Sources: public startup directories and each company's own website.</p>
+  </div>
+</footer>
+</div>
+<div id="root"><div class="boot" role="status"><svg width="44" height="44" viewBox="0 0 40 40" aria-hidden="true"><rect width="40" height="40" rx="10" fill="#c9f15a"/><path d="M13 27L27 13" fill="none" stroke="#202a31" stroke-width="3.6" stroke-linecap="round"/><circle cx="13" cy="27" r="5" fill="#202a31"/><circle cx="27" cy="13" r="4.4" fill="#c9f15a" stroke="#202a31" stroke-width="3.2"/></svg><p>Opening your desk…</p></div></div>
+<noscript><style>html[data-view=app] #landing{display:block}#root{display:none}</style></noscript>
+<script type="module" src="/src/main.jsx"></script>
+</body>
 </html>

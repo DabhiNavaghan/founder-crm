@@ -1,4 +1,5 @@
-import * as XLSX from 'xlsx';
+// Excel parsing for the admin import. The spreadsheet library is large and only the admin needs it,
+// so it is loaded on demand inside parseWorkbook().
 
 // Column names we accept for each field, compared case-insensitively.
 const COLUMNS = {
@@ -54,7 +55,8 @@ export function parsePerson(value, fallbackRole) {
   return { first_name: parts[0], last_name: parts.slice(1).join(' '), role: role || fallbackRole || 'Founder / Decision Maker' };
 }
 
-export function parseWorkbook(arrayBuffer) {
+export async function parseWorkbook(arrayBuffer) {
+  const XLSX = await import('xlsx');
   const wb = XLSX.read(arrayBuffer, { type: 'array' });
   const out = [];
   const seen = new Set();
