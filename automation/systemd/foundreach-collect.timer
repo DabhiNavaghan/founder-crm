@@ -1,0 +1,11 @@
+[Unit]
+Description=FoundReach daily company collection (03:30 UTC)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+AccuracySec=1min
+Unit=foundreach-collect.service
+
+[Install]
+WantedBy=timers.target

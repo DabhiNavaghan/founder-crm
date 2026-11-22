@@ -2,3 +2,9 @@
 .env*.local
 node_modules
 dist
+
+# Daily automation: run output, reports, scraper caches
+automation/work/
+scraper/cache/
+scraper/out/
+__pycache__/

@@ -21,6 +21,9 @@ node_modules
 dist
 supabase
 deploy
+automation
+scraper
+tests
 Dockerfile
 .dockerignore
 docker-compose*.yml

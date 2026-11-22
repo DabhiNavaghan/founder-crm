@@ -1,0 +1,27 @@
+[Unit]
+Description=FoundReach daily company collection
+Documentation=https://github.com/DabhiNavaghan/founder-crm/blob/main/automation/README.md
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=opc
+Group=opc
+WorkingDirectory=/home/opc/apps/foundreach-agents/repo
+EnvironmentFile=-/home/opc/apps/foundreach-agents/.env
+Environment=PATH=/home/opc/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/bash /home/opc/apps/foundreach-agents/repo/automation/collect.sh
+# The script stops itself after COLLECT_MAX_MINUTES (50); this is the hard stop behind it.
+TimeoutStartSec=75min
+# Stay out of the way of the other applications on this server.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUWeight=50
+MemoryHigh=1G
+MemoryMax=1500M
+TasksMax=512
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=foundreach-collect

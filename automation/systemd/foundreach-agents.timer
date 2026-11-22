@@ -1,0 +1,11 @@
+[Unit]
+Description=FoundReach daily agent run (04:30 UTC)
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 UTC
+Persistent=true
+AccuracySec=1min
+Unit=foundreach-agents.service
+
+[Install]
+WantedBy=timers.target

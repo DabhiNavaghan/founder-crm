@@ -1,0 +1,850 @@
+#!/usr/bin/env bash
+# FoundReach daily agent run. See automation/README.md.
+#
+#   automation/run-daily.sh                 full run (what the systemd timer starts)
+#   automation/run-daily.sh --dry-run       same stages in a throwaway clone; no push, no PR, no email
+#   automation/run-daily.sh --stage NAME    one step: research plan design build review publish report email
+#   automation/run-daily.sh --selftest      check the stage sandbox on this machine, without any AI call
+#   options: --model NAME (overrides AGENT_MODEL), --keep (dry run: keep the throwaway clone)
+#
+# Two folders matter:
+#   the trusted clone   this repository. Only this script touches it. Prompts, scripts and the push
+#                       to GitHub come from here.
+#   the workspace       a fresh clone made for each run. The AI stages work there, and everything
+#                       that runs code from it (npm, node, git) runs inside the stage sandbox.
+#
+# Written for bash 3.2+ so the dry run also works on macOS.
+set -uo pipefail
+
+main() {
+  parse_args "$@"
+  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+  REPO="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+  BASE="$(dirname "$REPO")"
+  load_env
+  DATE="$(date -u +%Y-%m-%d)"
+  STARTED="$(date +%s)"
+  DAILY_MAX_MINUTES="${DAILY_MAX_MINUTES:-150}"
+  DEADLINE=$((STARTED + DAILY_MAX_MINUTES * 60))
+  MODEL="${OPT_MODEL:-${AGENT_MODEL:-}}"
+  GIT_NAME="${GIT_IDENTITY_NAME:-Navghan Dabhi}"
+  GIT_EMAIL="${GIT_IDENTITY_EMAIL:-$(git config --global user.email 2>/dev/null || true)}"
+  GIT_EMAIL="${GIT_EMAIL:-DabhiNavaghan@users.noreply.github.com}"
+  APP_DIR="${APP_DIR:-/home/opc/apps/foundreach}"
+  TOKEN_ENV=""; CLEAN_DIRS=""
+
+  if [ "$DRY_RUN" = 1 ]; then
+    TMP="$(mktemp -d "${TMPDIR:-/tmp}/foundreach-dry.XXXXXX")"; TMP="$(cd "$TMP" && pwd -P)"
+    WS="$TMP/workspace"; STATE="$TMP/state"
+    OUT_DIR="$REPO/automation/work/dry-run-$DATE-$(date -u +%H%M%S)"
+    [ "$KEEP" = 1 ] || CLEAN_DIRS="$TMP"
+  else
+    WS="${AGENTS_WORKSPACE:-$BASE/workspace}"; STATE="${AGENTS_STATE_DIR:-$BASE/state}"
+    OUT_DIR="$REPO/automation/work/$DATE"
+  fi
+  WORK_REL="automation/work/$DATE"
+  WORK="$WS/$WORK_REL"
+  MEMORY="$REPO/automation/work/memory"
+  mkdir -p "$OUT_DIR" "$MEMORY" "$STATE/home" "$STATE/claude" || { echo "cannot create $OUT_DIR"; return 1; }
+  RUN_LOG="$OUT_DIR/run.log"
+  STATUS_FILE="$OUT_DIR/status.tsv"
+  trap cleanup EXIT
+
+  choose_sandbox
+  if [ "$SELFTEST" = 1 ]; then selftest; return $?; fi
+
+  acquire_lock || return 1
+  log "FoundReach daily run $DATE  mode=$([ "$DRY_RUN" = 1 ] && echo dry-run || echo live)  sandbox=$SANDBOX  model=${MODEL:-default}  limit=${DAILY_MAX_MINUTES}m"
+  log "trusted clone: $REPO"
+  log "workspace:     $WS"
+
+  if [ -n "$ONLY_STAGE" ]; then run_single_stage; return $?; fi
+
+  : > "$STATUS_FILE"
+  [ "$DRY_RUN" = 1 ] || update_trusted_clone "$@"
+  check_ai_ready
+  if [ "$AI_OK" = 1 ]; then
+    prepare_workspace || AI_OK=0
+  fi
+  if [ "$AI_OK" = 1 ]; then
+    write_context
+    run_stage research; note_reviewed
+    write_context
+    run_stage plan; after_plan
+    if [ -n "$(ws_file plan.md)" ]; then
+      write_context; run_stage design
+      write_context; run_stage build; after_build
+      write_context
+      if [ "${CODE_FILES:-0}" -gt 0 ]; then run_stage review; after_review; else set_status review skipped 0 "the build stage committed no code"; fi
+    else
+      for s in design build review; do set_status "$s" skipped 0 "no plan was produced"; done
+      COMMITS=0; CODE_FILES=0; VERDICT=NONE; BUILD_OK=0
+    fi
+    publish
+    write_context
+    run_stage report
+  else
+    for s in research plan design build review publish report; do set_status "$s" skipped 0 "$AI_WHY"; done
+  fi
+  collect_work
+  finish_report
+  send_email
+  remember
+  prune_old
+  log "done in $(( ($(date +%s) - STARTED) / 60 )) min. Report: $OUT_DIR/report.html"
+  return 0
+}
+
+# ------------------------------------------------------------------------------------------------
+# Arguments, environment, logging
+# ------------------------------------------------------------------------------------------------
+parse_args() {
+  DRY_RUN=0; ONLY_STAGE=""; SELFTEST=0; KEEP=0; OPT_MODEL=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) DRY_RUN=1 ;;
+      --stage) ONLY_STAGE="${2:-}"; shift ;;
+      --selftest) SELFTEST=1 ;;
+      --keep) KEEP=1 ;;
+      --model) OPT_MODEL="${2:-}"; shift ;;
+      -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+      *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
+    esac
+    shift
+  done
+  case "$ONLY_STAGE" in ""|research|plan|design|build|review|publish|report|email) ;; *) echo "unknown stage: $ONLY_STAGE" >&2; exit 2 ;; esac
+}
+
+# Settings come from the environment (systemd's EnvironmentFile). For a run by hand they are read
+# from the .env next to the clone. Only known names are taken, and the file is never executed.
+ENV_KEYS="CLAUDE_CODE_OAUTH_TOKEN SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS SMTP_SECURITY REPORT_FROM REPORT_TO AUTO_MERGE AGENT_MODEL DAILY_MAX_MINUTES AGENT_SANDBOX AGENT_MEMORY_MAX UPDATE_CONTAINER GIT_IDENTITY_NAME GIT_IDENTITY_EMAIL APP_DIR"
+load_env() {
+  local file="${AGENTS_ENV_FILE:-$BASE/.env}" line key value
+  [ -f "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|\#*) continue ;; esac
+    key="${line%%=*}"; value="${line#*=}"
+    case " $ENV_KEYS " in *" $key "*) ;; *) continue ;; esac
+    case "$value" in \"*\") value="${value#\"}"; value="${value%\"}" ;; \'*\') value="${value#\'}"; value="${value%\'}" ;; esac
+    if [ -z "$(eval "printf '%s' \"\${$key:-}\"")" ]; then export "$key=$value"; fi
+  done < "$file"
+}
+
+log() { local line; line="$(date -u +%H:%M:%S) $*"; echo "$line"; echo "$line" >> "$RUN_LOG"; }
+
+set_status() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$STATUS_FILE"; log "[$1] $2 (${3}s) $4"; }
+status_of() { awk -F '\t' -v s="$1" '$1==s{r=$2} END{print r}' "$STATUS_FILE" 2>/dev/null; }
+
+cleanup() {
+  [ -n "${TOKEN_ENV:-}" ] && rm -f "$TOKEN_ENV"
+  [ -n "${LOCK_DIR:-}" ] && rmdir "$LOCK_DIR" 2>/dev/null
+  [ -n "${CLEAN_DIRS:-}" ] && rm -rf "$CLEAN_DIRS"
+  return 0
+}
+
+acquire_lock() {
+  local dir="$REPO/automation/work/.run.lock" pid
+  if ! mkdir "$dir" 2>/dev/null; then
+    pid="$(cat "$dir/pid" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then log "another run is in progress (pid $pid); stopping"; return 1; fi
+    log "removing a stale lock"; rm -rf "$dir"; mkdir "$dir" || return 1
+  fi
+  echo $$ > "$dir/pid"
+  LOCK_DIR="$dir"
+  trap 'rm -f "$LOCK_DIR/pid"; cleanup' EXIT
+}
+
+# with_timeout SECONDS cmd...   exit 124 when the limit was hit
+with_timeout() {
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --signal=TERM --kill-after=30 "$secs" "$@"
+  else
+    perl -e 'my $s = shift; my $pid = fork(); if (!$pid) { setpgrp(0, 0); exec @ARGV; exit 127 }
+      $SIG{ALRM} = sub { kill "TERM", -$pid; sleep 5; kill "KILL", -$pid; exit 124 };
+      alarm $s; waitpid($pid, 0); exit(($? & 127) ? 128 + ($? & 127) : $? >> 8)' "$secs" "$@"
+  fi
+}
+
+# ------------------------------------------------------------------------------------------------
+# Sandbox. Everything that executes code from the workspace goes through sandbox_exec.
+#   systemd  each call is a transient systemd unit: no sudo, read-only system, /home hidden except
+#            the workspace and the state folder, no Docker socket, memory and time limits, and no
+#            secrets in its environment except the Claude token for the AI stages.
+#   none     runs directly (macOS dry runs, or AGENT_SANDBOX=none set on purpose).
+# ------------------------------------------------------------------------------------------------
+choose_sandbox() {
+  SANDBOX="${AGENT_SANDBOX:-}"; SANDBOX_WHY=""
+  if [ -z "$SANDBOX" ]; then
+    if [ "$(uname -s)" = Linux ] && command -v systemd-run >/dev/null 2>&1; then SANDBOX=systemd; else SANDBOX=none; fi
+  fi
+  if [ "$SANDBOX" = systemd ]; then
+    if ! command -v systemd-run >/dev/null 2>&1; then SANDBOX_WHY="systemd-run is not installed"
+    elif ! sudo -n true 2>/dev/null; then SANDBOX_WHY="sudo -n is not available, and starting a transient unit needs it"
+    fi
+  fi
+  TOOL_PATH=""; RO_BINDS=""
+  local tool path real dir top
+  for tool in claude node npm git bash; do
+    path="$(command -v "$tool" 2>/dev/null || true)"; [ -n "$path" ] || continue
+    dir="$(dirname "$path")"
+    case ":$TOOL_PATH:" in *":$dir:"*) ;; *) TOOL_PATH="${TOOL_PATH:+$TOOL_PATH:}$dir" ;; esac
+    real="$(readlink -f "$path" 2>/dev/null || echo "$path")"
+    for p in "$path" "$real"; do
+      case "$p" in
+        "$HOME"/*) top="$HOME/$(printf '%s' "${p#"$HOME"/}" | cut -d/ -f1)" ;;
+        /home/*|/root/*) top="$(dirname "$p")" ;;
+        *) continue ;;
+      esac
+      case " $RO_BINDS " in *" $top "*) ;; *) RO_BINDS="${RO_BINDS:+$RO_BINDS }$top" ;; esac
+    done
+  done
+  TOOL_PATH="$TOOL_PATH:/usr/local/bin:/usr/bin:/bin"
+  CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"
+}
+
+# sandbox_exec SECONDS WITH_TOKEN(0|1) STDIN_FILE STDOUT_FILE STDERR_FILE cmd...
+# Runs cmd with the workspace as working directory. Sets SB_TIMED_OUT. Returns the command's status.
+sandbox_exec() {
+  local secs="$1" with_token="$2" in="$3" out="$4" err="$5"; shift 5
+  local began rc unit
+  began="$(date +%s)"; SB_TIMED_OUT=0
+  [ "$in" = - ] && in=/dev/null
+  if [ "$SANDBOX" = systemd ]; then
+    unit="foundreach-agent-$$-$(date +%s)-$RANDOM"
+    local args
+    args=(sudo -n systemd-run --quiet --collect --wait --pipe --unit "$unit"
+      --uid "$(id -un)" --gid "$(id -gn)" --working-directory "$WS"
+      -p NoNewPrivileges=yes -p ProtectSystem=strict -p ProtectHome=tmpfs -p PrivateTmp=yes -p PrivateDevices=yes
+      -p ProtectKernelTunables=yes -p ProtectKernelModules=yes -p ProtectControlGroups=yes
+      -p RestrictSUIDSGID=yes -p LockPersonality=yes
+      -p "BindPaths=$WS $STATE" -p "ReadWritePaths=$WS $STATE"
+      -p InaccessiblePaths=-/run/docker.sock -p InaccessiblePaths=-/run/containerd -p InaccessiblePaths=-/run/podman
+      -p "MemoryMax=${AGENT_MEMORY_MAX:-3G}" -p MemorySwapMax=0 -p TasksMax=1024 -p CPUWeight=50 -p Nice=10
+      -p "RuntimeMaxSec=$secs"
+      --setenv "HOME=$STATE/home" --setenv "PATH=$TOOL_PATH" --setenv "CLAUDE_CONFIG_DIR=$STATE/claude"
+      --setenv LANG=C.UTF-8 --setenv DISABLE_AUTOUPDATER=1 --setenv CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 --setenv CI=1
+      --setenv GIT_CONFIG_GLOBAL=/dev/null --setenv GIT_CONFIG_NOSYSTEM=1
+      --setenv "GIT_AUTHOR_NAME=$GIT_NAME" --setenv "GIT_AUTHOR_EMAIL=$GIT_EMAIL"
+      --setenv "GIT_COMMITTER_NAME=$GIT_NAME" --setenv "GIT_COMMITTER_EMAIL=$GIT_EMAIL")
+    [ -n "$RO_BINDS" ] && args+=(-p "BindReadOnlyPaths=$RO_BINDS")
+    [ "$with_token" = 1 ] && [ -n "$TOKEN_ENV" ] && args+=(-p "EnvironmentFile=$TOKEN_ENV")
+    with_timeout $((secs + 60)) "${args[@]}" -- "$@" < "$in" > "$out" 2> "$err"; rc=$?
+    if [ "$rc" = 124 ]; then sudo -n systemctl stop "$unit" 2>/dev/null; fi
+  else
+    (
+      cd "$WS" || exit 126
+      unset SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS REPORT_FROM REPORT_TO CRON_SECRET GH_TOKEN GITHUB_TOKEN
+      [ "$with_token" = 1 ] || unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY
+      # Isolated tool state. A dry run that uses this machine's own Claude login keeps its normal home.
+      [ "${USE_LOCAL_LOGIN:-0}" = 1 ] || export HOME="$STATE/home" CLAUDE_CONFIG_DIR="$STATE/claude"
+      export PATH="$TOOL_PATH" DISABLE_AUTOUPDATER=1 CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 CI=1
+      # Stages never use this user's own git settings or hooks.
+      export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+      export GIT_AUTHOR_NAME="$GIT_NAME" GIT_AUTHOR_EMAIL="$GIT_EMAIL" GIT_COMMITTER_NAME="$GIT_NAME" GIT_COMMITTER_EMAIL="$GIT_EMAIL"
+      with_timeout "$secs" "$@"
+    ) < "$in" > "$out" 2> "$err"; rc=$?
+  fi
+  if [ "$rc" = 124 ] || [ $(( $(date +%s) - began )) -ge "$secs" ]; then SB_TIMED_OUT=1; fi
+  return "$rc"
+}
+
+# ws SECONDS cmd...   run in the workspace sandbox; stdout is returned, stderr goes to the run log
+ws() {
+  local secs="$1" out err rc; shift
+  out="$(mktemp)"; err="$(mktemp)"
+  sandbox_exec "$secs" 0 - "$out" "$err" "$@"; rc=$?
+  cat "$out"; cat "$err" >> "$RUN_LOG"; rm -f "$out" "$err"
+  return "$rc"
+}
+# ws_logged SECONDS LOGFILE cmd...   same, with all output appended to LOGFILE
+ws_logged() {
+  local secs="$1" file="$2" out rc; shift 2
+  out="$(mktemp)"
+  sandbox_exec "$secs" 0 - "$out" "$out.err" "$@"; rc=$?
+  cat "$out" "$out.err" >> "$file"; rm -f "$out" "$out.err"
+  return "$rc"
+}
+
+# The work folder is written by stages, so the script never follows a link there: not for the
+# folder, not for a file in it.
+work_dir_ok() { [ -d "$WORK" ] && [ ! -L "$WS/automation" ] && [ ! -L "$WS/automation/work" ] && [ ! -L "$WORK" ]; }
+# put_work NAME   writes stdin to a file in the work folder, replacing whatever is there
+put_work() {
+  local tmp; tmp="$(mktemp)"; cat > "$tmp"
+  if work_dir_ok; then rm -rf "${WORK:?}/$1"; cp "$tmp" "$WORK/$1"; else log "the work folder is not a plain folder; $1 was not written"; fi
+  rm -f "$tmp"
+}
+
+# A hand-over file written by a stage: printed only when it is a regular file of sane size.
+ws_file() {
+  local f="$WORK/$1"
+  work_dir_ok || return 0
+  if [ -f "$f" ] && [ ! -L "$f" ] && [ "$(wc -c < "$f")" -gt 0 ] && [ "$(wc -c < "$f")" -lt 2000000 ]; then echo "$f"; fi
+}
+
+selftest() {
+  local fail=0 t="$STATE/selftest.out"
+  echo "sandbox: $SANDBOX ${SANDBOX_WHY:+($SANDBOX_WHY)}"
+  if [ "$SANDBOX" != systemd ] || [ -n "$SANDBOX_WHY" ]; then echo "FAIL  the systemd sandbox is not available here"; return 1; fi
+  WS="$STATE/selftest-ws"; mkdir -p "$WS"
+  check() { # check "description" expected_status cmd...
+    local what="$1" want="$2" rc; shift 2
+    sandbox_exec 60 0 - "$t" "$t.err" "$@"; rc=$?
+    if { [ "$want" = ok ] && [ "$rc" = 0 ]; } || { [ "$want" = fail ] && [ "$rc" != 0 ]; }; then echo "PASS  $what"; else echo "FAIL  $what (status $rc) $(head -c 300 "$t.err" | tr '\n' ' ')"; fail=1; fi
+  }
+  check "a stage can write in its workspace" ok bash -c 'echo ok > selftest.txt && rm selftest.txt'
+  check "a stage cannot use sudo" fail sudo -n true
+  check "a stage cannot see the app folder ($APP_DIR)" fail test -e "$APP_DIR"
+  check "a stage cannot see the settings file ($BASE/.env)" fail test -e "$BASE/.env"
+  check "a stage cannot see the trusted clone" fail test -e "$REPO/automation"
+  check "a stage cannot write to /etc" fail bash -c 'echo x > /etc/foundreach-selftest'
+  check "a stage cannot reach the Docker socket" fail test -r /run/docker.sock
+  check "claude starts" ok claude --version
+  check "node starts" ok node --version
+  check "npm starts" ok npm --version
+  check "git starts" ok git --version
+  rm -rf "$WS" "$t" "$t.err"
+  [ "$fail" = 0 ] && echo "sandbox self-test passed" || echo "sandbox self-test FAILED"
+  return "$fail"
+}
+
+# ------------------------------------------------------------------------------------------------
+# Preparation
+# ------------------------------------------------------------------------------------------------
+update_trusted_clone() {
+  # Fast-forward only: nothing local is ever discarded. After an update the new script takes over.
+  local before after
+  before="$(git -C "$REPO" rev-parse HEAD 2>/dev/null)"
+  if [ "$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null)" != main ]; then log "trusted clone is not on main; using it as it is"; return 0; fi
+  if with_timeout 120 git -C "$REPO" fetch --quiet --prune origin >> "$RUN_LOG" 2>&1 \
+     && git -C "$REPO" merge --ff-only --quiet origin/main >> "$RUN_LOG" 2>&1; then
+    after="$(git -C "$REPO" rev-parse HEAD)"
+    if [ "$before" != "$after" ] && [ -z "${FOUNDREACH_REEXEC:-}" ]; then
+      log "updated to $(git -C "$REPO" rev-parse --short HEAD); restarting with the new script"
+      rm -f "$LOCK_DIR/pid"; rmdir "$LOCK_DIR" 2>/dev/null; LOCK_DIR=""
+      FOUNDREACH_REEXEC=1 exec bash "$REPO/automation/run-daily.sh" "$@"
+    fi
+  else
+    log "could not fast-forward the trusted clone from origin/main; using it as it is"
+  fi
+}
+
+check_ai_ready() {
+  AI_OK=1; AI_WHY=""; USE_LOCAL_LOGIN=0
+  if [ -z "$CLAUDE_BIN" ]; then AI_OK=0; AI_WHY="the claude command was not found on PATH"
+  elif [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    if [ "$DRY_RUN" = 1 ] && [ "$SANDBOX" = none ]; then
+      USE_LOCAL_LOGIN=1; log "CLAUDE_CODE_OAUTH_TOKEN is not set; this dry run uses the Claude login of this machine"
+    else
+      AI_OK=0; AI_WHY="CLAUDE_CODE_OAUTH_TOKEN is not set. Run 'claude setup-token' once and put the token in $BASE/.env"
+    fi
+  fi
+  if [ "$AI_OK" = 1 ] && [ -n "$SANDBOX_WHY" ]; then AI_OK=0; AI_WHY="the stage sandbox cannot start: $SANDBOX_WHY (run automation/run-daily.sh --selftest)"; fi
+  if [ "$AI_OK" = 0 ]; then log "AI stages will NOT run: $AI_WHY"; return 0; fi
+  if [ "$SANDBOX" = systemd ]; then
+    # The token reaches the AI stages through a file only systemd reads; it is never on a command line.
+    TOKEN_ENV="$BASE/.agent-token.env"
+    ( umask 077; printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$CLAUDE_CODE_OAUTH_TOKEN" > "$TOKEN_ENV" )
+  fi
+}
+
+prepare_workspace() {
+  local t0; t0="$(date +%s)"
+  rm -rf "$WS"
+  # Tool state of earlier runs is not carried over.
+  [ "$DRY_RUN" = 1 ] || { rm -rf "$STATE/home" "$STATE/claude"; mkdir -p "$STATE/home" "$STATE/claude"; }
+  if ! git clone --quiet --no-hardlinks "$REPO" "$WS" >> "$RUN_LOG" 2>&1; then set_status prepare failed 0 "could not clone the workspace"; AI_WHY="the workspace could not be created"; return 1; fi
+  if [ "$DRY_RUN" = 1 ]; then
+    # Bring over uncommitted pipeline files so a dry run tests what is on disk, and base the branch on that.
+    git -C "$WS" checkout --quiet -B main "$(git -C "$WS" rev-parse --verify --quiet origin/main || echo HEAD)" >> "$RUN_LOG" 2>&1
+    ( cd "$REPO" && tar cf - --exclude './automation/work' ./automation ./.gitignore ./tests ./package.json 2>/dev/null ) | ( cd "$WS" && tar xf - )
+    git -C "$WS" add -A >> "$RUN_LOG" 2>&1
+    git -C "$WS" -c user.name="$GIT_NAME" -c user.email="$GIT_EMAIL" commit --quiet -m "Dry-run overlay" >> "$RUN_LOG" 2>&1 || true
+    if [ -d "$REPO/node_modules" ]; then ln -s "$REPO/node_modules" "$WS/node_modules"; fi
+  else
+    git -C "$WS" checkout --quiet -B main origin/main >> "$RUN_LOG" 2>&1
+  fi
+  git -C "$WS" checkout --quiet -b "daily/$DATE" >> "$RUN_LOG" 2>&1
+  BASE_SHA="$(git -C "$WS" rev-parse main)"; MAIN_SHORT="$(git -C "$WS" rev-parse --short main)"
+  mkdir -p "$WORK" "$WS/automation/work/memory"
+  cp -f "$MEMORY"/*.md "$WS/automation/work/memory/" 2>/dev/null
+  cp -f "$REPO/automation/work/collect-last.json" "$WS/automation/work/memory/collect-last.json" 2>/dev/null
+
+  BASELINE="unknown"
+  if [ ! -e "$WS/node_modules" ]; then
+    log "installing dependencies (npm ci)"
+    if ! ws_logged 900 "$OUT_DIR/npm-ci.log" npm ci --no-audit --no-fund; then
+      set_status prepare failed $(( $(date +%s) - t0 )) "npm ci failed, see npm-ci.log"; AI_WHY="npm ci failed in the workspace"; return 1
+    fi
+  fi
+  if ws_logged 600 "$OUT_DIR/baseline-build.log" npm run build; then BASELINE="passes"; else BASELINE="FAILS (see baseline-build.log)"; fi
+  ws 60 git checkout --quiet -- . > /dev/null
+  set_status prepare ok $(( $(date +%s) - t0 )) "main $MAIN_SHORT, build on main $BASELINE"
+  COMMITS=0; CODE_FILES=0; VERDICT=NONE; BUILD_OK=0; TITLE=""; PR_URL=""; PUBLISH_NOTE=""
+}
+
+open_prs() {
+  [ "$DRY_RUN" = 1 ] && { echo "(dry run: not listed)"; return; }
+  command -v gh >/dev/null 2>&1 || { echo "(gh is not installed)"; return; }
+  with_timeout 60 gh pr list --repo "$(repo_slug)" --state open --label daily-agent --limit 20 \
+    --json number,title,isDraft,createdAt,url,labels \
+    --jq '.[] | "- #\(.number) \(.title) [\(if .isDraft then "draft" else "open" end), opened \(.createdAt[0:10]), labels: \([.labels[].name] | join(", "))] \(.url)"' 2>/dev/null \
+    || echo "(could not be listed)"
+}
+repo_slug() { git -C "$REPO" remote get-url origin 2>/dev/null | sed -e 's#^git@github.com:##' -e 's#^https://github.com/##' -e 's#\.git$##'; }
+
+# context.md is the orchestrator's own account of the run. It is rewritten before every stage.
+write_context() {
+  [ -n "${OPEN_PRS:-}" ] || OPEN_PRS="$(open_prs)"
+  {
+    echo "# Run context (written by the orchestrator, not by a stage)"
+    echo
+    echo "- Date: $DATE (UTC)"
+    echo "- Branch: daily/$DATE, created from main at ${MAIN_SHORT:-?}"
+    echo "- Work folder: $WORK_REL/"
+    echo "- Build on main before today's work: ${BASELINE:-unknown}"
+    [ "$DRY_RUN" = 1 ] && echo "- This is a DRY RUN: keep everything very small. Review one competitor and run one search at most; choose a trivial feature (under 30 changed lines); keep every output file short."
+    echo
+    echo "## Steps so far"
+    echo
+    echo "| step | status | seconds | note |"
+    echo "|---|---|---|---|"
+    awk -F '\t' '{printf "| %s | %s | %s | %s |\n", $1, $2, $3, $4}' "$STATUS_FILE"
+    echo
+    echo "## Open pull requests from earlier daily runs"
+    echo
+    echo "${OPEN_PRS:-None.}"
+    echo
+    echo "## Auto-merge"
+    echo
+    if [ "${AUTO_MERGE:-0}" = 1 ]; then echo "On: a PASS without migration, pipeline or package changes is merged and deployed."; else echo "Off: every change waits as a pull request for the founder."; fi
+  } > "$OUT_DIR/context.md"
+  put_work context.md < "$OUT_DIR/context.md"
+}
+
+# ------------------------------------------------------------------------------------------------
+# AI stages
+# ------------------------------------------------------------------------------------------------
+# Sets S_TURNS S_MINUTES S_TOOLS S_OUTPUT and the S_ALLOW / S_DENY arrays for a stage.
+stage_config() {
+  local w="Edit(/$WORK/**)" shell_deny
+  S_ALLOW=(Read Glob Grep "$w"); S_DENY=(Bash Agent NotebookEdit WebFetch WebSearch)
+  shell_deny=("Bash(git push *)" "Bash(git push)" "Bash(sudo *)" "Bash(curl *)" "Bash(wget *)" "Bash(ssh *)" "Bash(scp *)" "Bash(docker *)" "Bash(npm install *)" "Bash(npm i *)" "Bash(npx *)" "Bash(ps *)" "Bash(env)" "Bash(printenv *)")
+  case "$1" in
+    research)
+      S_TURNS=60; S_MINUTES=25; S_OUTPUT=research.md
+      S_TOOLS="WebSearch,WebFetch,Read,Glob,Grep,Write"
+      S_ALLOW+=(WebSearch WebFetch); S_DENY=(Bash Agent NotebookEdit) ;;
+    plan)
+      S_TURNS=30; S_MINUTES=10; S_OUTPUT=plan.md
+      S_TOOLS="Read,Glob,Grep,Write,Edit"
+      S_ALLOW+=("Edit(/$WS/automation/backlog.md)") ;;
+    design)
+      S_TURNS=25; S_MINUTES=10; S_OUTPUT=design.md
+      S_TOOLS="Read,Glob,Grep,Write" ;;
+    build)
+      S_TURNS=150; S_MINUTES=50; S_OUTPUT=build.md
+      S_TOOLS="Read,Edit,Write,Glob,Grep,Bash,Agent"
+      S_ALLOW=(Read Glob Grep Agent "Edit(/$WS/**)"
+        "Bash(npm run build)" "Bash(npm test)" "Bash(node --check *)" "Bash(node --test)" "Bash(node --test *)"
+        "Bash(git status)" "Bash(git status *)" "Bash(git diff)" "Bash(git diff *)" "Bash(git add *)"
+        "Bash(git commit *)" "Bash(git log)" "Bash(git log *)" "Bash(git restore *)")
+      S_DENY=(WebFetch WebSearch NotebookEdit "${shell_deny[@]}"
+        "Edit(/$WS/automation/*.sh)" "Edit(/$WS/automation/*.py)" "Edit(/$WS/automation/GUARDRAILS.md)"
+        "Edit(/$WS/automation/README.md)" "Edit(/$WS/automation/backlog.md)" "Edit(/$WS/automation/.env*)"
+        "Edit(/$WS/automation/prompts/**)" "Edit(/$WS/automation/systemd/**)"
+        "Edit(/$WS/.github/**)" "Edit(/$WS/.claude/**)" "Edit(/$WS/deploy/**)" "Edit(/$WS/docker/**)"
+        "Edit(/$WS/Dockerfile)" "Edit(/$WS/.git/**)") ;;
+    review)
+      S_TURNS=60; S_MINUTES=20; S_OUTPUT=review.md
+      S_TOOLS="Read,Glob,Grep,Write,Bash"
+      S_ALLOW+=("Bash(npm run build)" "Bash(npm test)" "Bash(node --check *)" "Bash(node --test)" "Bash(node --test *)"
+        "Bash(git status)" "Bash(git status *)" "Bash(git diff)" "Bash(git diff *)" "Bash(git log)" "Bash(git log *)" "Bash(git show *)")
+      S_DENY=(WebFetch WebSearch Agent NotebookEdit "${shell_deny[@]}"
+        "Bash(git add *)" "Bash(git commit *)" "Bash(git restore *)" "Bash(git checkout *)" "Bash(git reset *)") ;;
+    report)
+      S_TURNS=30; S_MINUTES=12; S_OUTPUT=report.html
+      S_TOOLS="Read,Glob,Grep,Write" ;;
+  esac
+  if [ "$DRY_RUN" = 1 ]; then
+    case "$1" in research) S_TURNS=14; S_MINUTES=6 ;; plan) S_TURNS=14; S_MINUTES=5 ;; design) S_TURNS=10; S_MINUTES=4 ;;
+      build) S_TURNS=40; S_MINUTES=10 ;; review) S_TURNS=25; S_MINUTES=8 ;; report) S_TURNS=14; S_MINUTES=6 ;; esac
+  fi
+  # Optional per-stage overrides, for example TURNS_BUILD=200 MINUTES_BUILD=70.
+  local up; up="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
+  S_TURNS="$(eval "printf '%s' \"\${TURNS_$up:-$S_TURNS}\"")"
+  S_MINUTES="$(eval "printf '%s' \"\${MINUTES_$up:-$S_MINUTES}\"")"
+}
+
+run_stage() {
+  local stage="$1" t0 secs left rc prompt result note status took
+  stage_config "$stage"
+  t0="$(date +%s)"; left=$((DEADLINE - t0)); secs=$((S_MINUTES * 60))
+  # The report always gets a few minutes, even when the day's limit is used up.
+  if [ "$stage" = report ] && [ "$left" -lt 300 ]; then left=300; fi
+  if [ "$left" -lt 120 ]; then set_status "$stage" skipped 0 "the daily time limit (${DAILY_MAX_MINUTES} min) was reached"; return 1; fi
+  [ "$secs" -gt "$left" ] && secs="$left"
+
+  prompt="$OUT_DIR/$stage.prompt.md"; result="$OUT_DIR/$stage.result.json"
+  {
+    cat "$REPO/automation/GUARDRAILS.md"; echo; echo "---"; echo
+    cat "$REPO/automation/prompts/$stage.md"; echo
+    echo "## This run"; echo
+    echo "- Date: $DATE"
+    echo "- Your working directory is the repository: $WS"
+    echo "- Your work folder is $WORK_REL/ (absolute: $WORK/)"
+    echo "- Start by reading $WORK_REL/context.md"
+    echo "- You have at most $S_TURNS turns and $((secs / 60)) minutes. Write your output file early and improve it, so a cut-off still leaves a result."
+  } | sed -e "s|{{DATE}}|$DATE|g" -e "s|{{WORK}}|$WORK_REL|g" > "$prompt"
+
+  local cmd
+  cmd=("$CLAUDE_BIN" -p --restricted --safe-mode --strict-mcp-config --no-session-persistence
+    --permission-mode dontAsk --permission-prompts none --max-turns "$S_TURNS" --output-format json
+    --settings '{"includeCoAuthoredBy":false}' --tools "$S_TOOLS"
+    --allowedTools "${S_ALLOW[@]}" --disallowedTools "${S_DENY[@]}")
+  [ -n "$MODEL" ] && cmd+=(--model "$MODEL")
+
+  log "[$stage] starting: $S_TURNS turns, $((secs / 60)) min, tools $S_TOOLS"
+  sandbox_exec "$secs" 1 "$prompt" "$result" "$OUT_DIR/$stage.stderr.log" "${cmd[@]}"; rc=$?
+  took=$(( $(date +%s) - t0 ))
+
+  note="exit $rc"
+  if command -v jq >/dev/null 2>&1 && jq -e . "$result" >/dev/null 2>&1; then
+    jq -r '.result // ""' "$result" > "$OUT_DIR/$stage.final-message.md"
+    note="$(jq -r '"turns \(.num_turns // "?"), \(.subtype // "?"), refused tool calls \((.permission_denials // []) | length)"' "$result")"
+    jq -r '(.permission_denials // [])[] | "  refused: \(.tool_name) \(.tool_input.command // .tool_input.file_path // .tool_input.url // .tool_input.query // "" | tostring | .[0:160])"' "$result" >> "$RUN_LOG"
+  fi
+  if [ -n "$(ws_file "$S_OUTPUT")" ]; then
+    if [ "$SB_TIMED_OUT" = 1 ]; then status=timeout; note="$note; hit the time limit but left $S_OUTPUT"
+    elif [ "$rc" != 0 ]; then status=partial; note="$note; ended with an error but left $S_OUTPUT"
+    else status=ok; fi
+  else
+    if [ "$SB_TIMED_OUT" = 1 ]; then status=timeout; note="$note; hit the time limit, no $S_OUTPUT"
+    else status=failed; note="$note; no $S_OUTPUT was written. $(head -c 200 "$OUT_DIR/$stage.stderr.log" 2>/dev/null | tr '\n\t' '  ')"; fi
+  fi
+  set_status "$stage" "$status" "$took" "$note"
+  [ "$status" = ok ] || [ "$status" = partial ]
+}
+
+note_reviewed() {
+  local f; f="$(ws_file reviewed.md)"; [ -n "$f" ] || return 0
+  { echo "## $DATE"; grep -E '^- .{3,300}$' "$f" | head -20; } >> "$MEMORY/reviewed.md.new" 2>/dev/null
+}
+
+after_plan() {
+  local f; f="$(ws_file plan.md)"
+  TITLE=""
+  if [ -n "$f" ]; then
+    TITLE="$(grep -m1 '^TITLE:' "$f" | sed -e 's/^TITLE:[[:space:]]*//' | LC_ALL=C tr -cd '[:alnum:] .,:()/+&_-' | cut -c1-70)"
+  fi
+  [ -n "$TITLE" ] || TITLE="Daily update $DATE"
+  # The backlog is the one committed file a non-build stage may change.
+  if [ -n "$(ws 60 git status --porcelain -- automation/backlog.md)" ]; then
+    ws 60 git add automation/backlog.md > /dev/null && ws 60 git commit --quiet -m "Update backlog" > /dev/null && log "[plan] backlog update committed"
+  fi
+  ws 60 git checkout --quiet -- . > /dev/null
+}
+
+# Removes whatever a stage left uncommitted, after saving it as a patch for the record.
+clean_workspace() {
+  if [ -n "$(ws 60 git status --porcelain)" ]; then
+    ws 120 git add -A -N . > /dev/null
+    ws 120 git diff > "$OUT_DIR/uncommitted-after-$1.patch"
+    ws 60 git reset --quiet > /dev/null; ws 60 git checkout --quiet -- . > /dev/null; ws 60 git clean -fdq > /dev/null
+    log "[$1] uncommitted changes were discarded (kept as uncommitted-after-$1.patch)"
+  fi
+}
+
+after_build() {
+  clean_workspace build
+  COMMITS="$(ws 60 git rev-list --count "$BASE_SHA..HEAD" | tr -cd '0-9')"; COMMITS="${COMMITS:-0}"
+  HEAD_AFTER_BUILD="$(ws 60 git rev-parse HEAD | tr -cd 'a-f0-9')"
+  # Files changed other than the backlog: without any, there is nothing to review.
+  CODE_FILES="$(ws 60 git diff --name-only "$BASE_SHA" HEAD | grep -v '^automation/backlog\.md$' | grep -c . || true)"
+  # The orchestrator's own check, independent of what the build stage says about itself.
+  local f="$OUT_DIR/build-check.md" rc_build rc_test="skipped"
+  { echo "# Build check by the orchestrator"; echo; echo "- Commits on the branch: $COMMITS (files changed besides the backlog: $CODE_FILES)"; } > "$f"
+  ws_logged 600 "$OUT_DIR/build-check.log" npm run build; rc_build=$?
+  if grep -q '"test"[[:space:]]*:' "$WS/package.json" 2>/dev/null; then
+    ws_logged 600 "$OUT_DIR/build-check.log" npm test; rc_test=$?
+  fi
+  ws 60 git checkout --quiet -- . > /dev/null; ws 60 git clean -fdq > /dev/null
+  BUILD_OK=0; [ "$rc_build" = 0 ] && { [ "$rc_test" = 0 ] || [ "$rc_test" = skipped ]; } && BUILD_OK=1
+  {
+    echo "- npm run build: $([ "$rc_build" = 0 ] && echo passed || echo "FAILED (status $rc_build)")"
+    echo "- npm test: $([ "$rc_test" = 0 ] && echo passed || { [ "$rc_test" = skipped ] && echo "no test script" || echo "FAILED (status $rc_test)"; })"
+    echo; echo "Last lines of output:"; echo; echo '```'; tail -n 40 "$OUT_DIR/build-check.log" 2>/dev/null | cut -c1-300; echo '```'
+  } >> "$f"
+  put_work build-check.md < "$f"
+  set_status build-check "$([ "$BUILD_OK" = 1 ] && echo ok || echo failed)" 0 "commits $COMMITS, build $rc_build, tests $rc_test"
+}
+
+after_review() {
+  local f head_now
+  head_now="$(ws 60 git rev-parse HEAD | tr -cd 'a-f0-9')"
+  if [ "$head_now" != "$HEAD_AFTER_BUILD" ]; then
+    log "[review] the review stage changed the branch; putting it back"
+    ws 60 git reset --quiet --hard "$HEAD_AFTER_BUILD" > /dev/null
+  fi
+  clean_workspace review
+  f="$(ws_file review.md)"; VERDICT=NONE
+  if [ -n "$f" ]; then
+    case "$(grep -E '^VERDICT: (PASS|FAIL)[[:space:]]*$' "$f" | tail -n 1 | tr -d '[:space:]')" in
+      VERDICT:PASS) VERDICT=PASS ;; VERDICT:FAIL) VERDICT=FAIL ;;
+    esac
+  fi
+  log "[review] verdict: $VERDICT"
+}
+
+# ------------------------------------------------------------------------------------------------
+# Publish (no AI). Runs in the trusted clone: the branch is fetched from the workspace as data,
+# checked, and only then pushed. Nothing here executes code from the workspace.
+# ------------------------------------------------------------------------------------------------
+PROTECTED_RE='^(automation/([^/]+$|prompts/|systemd/)|\.github/|\.claude/|deploy/|docker/|Dockerfile$|package\.json$|package-lock\.json$)'
+
+publish() {
+  local t0 note="" sha files migration=0 protected=0 labels draft="" body rc slug bad
+  t0="$(date +%s)"; PR_URL=""; MERGED=0
+  PUB_FILE="$OUT_DIR/publish.md"; : > "$PUB_FILE"
+  pub() { echo "- $*" >> "$PUB_FILE"; put_work publish.md < "$PUB_FILE"; }
+  if [ "${COMMITS:-0}" -lt 1 ]; then pub "Nothing was committed today, so there is no pull request."; set_status publish skipped 0 "no commits"; return 0; fi
+
+  enforce_commit_rules
+  sha="$(ws 60 git rev-parse HEAD | tr -cd 'a-f0-9')"
+  if ! git -C "$REPO" fetch --quiet --no-tags "$WS" "daily/$DATE" >> "$RUN_LOG" 2>&1 || [ "$(git -C "$REPO" rev-parse FETCH_HEAD 2>/dev/null)" != "$sha" ]; then
+    pub "The branch could not be read from the workspace."; set_status publish failed 0 "fetch from workspace failed"; return 1
+  fi
+  local base; base="$(git -C "$REPO" merge-base "$sha" "$BASE_SHA" 2>/dev/null || echo "$BASE_SHA")"
+  files="$(git -C "$REPO" diff --name-only "$base" "$sha")"
+  printf '%s\n' "$files" | grep -q '^supabase/migrations/' && migration=1
+  printf '%s\n' "$files" | grep -Ev '^automation/backlog\.md$' | grep -Eq "$PROTECTED_RE" && protected=1
+  pub "Branch: daily/$DATE ($(git -C "$REPO" rev-list --count "$base..$sha") commits, $(printf '%s\n' "$files" | grep -c .) files)"
+  pub "Review verdict: $VERDICT. Orchestrator build check: $([ "$BUILD_OK" = 1 ] && echo passed || echo failed)."
+  [ "$migration" = 1 ] && pub "Contains a database migration the founder must apply by hand: $(printf '%s\n' "$files" | grep '^supabase/migrations/' | tr '\n' ' ')"
+  [ "$protected" = 1 ] && pub "Touches pipeline, deployment or package files, so it is never merged automatically: $(printf '%s\n' "$files" | grep -E "$PROTECTED_RE" | grep -v '^automation/backlog\.md$' | tr '\n' ' ')"
+
+  # Refuse to publish what must never be public or does not follow the commit rules.
+  bad="$(git -C "$REPO" log --format='%an|%cn|%b' "$base..$sha" | grep -vc "^$GIT_NAME|$GIT_NAME|\$" || true)"
+  [ "${bad:-0}" = 0 ] && bad="$(git -C "$REPO" log --format='%s' "$base..$sha" | grep -Eic 'co-authored-by|generated with|claude|anthropic' || true)"
+  if secret_in_diff "$base" "$sha"; then
+    pub "NOT pushed: the diff looks like it contains a secret. The branch stays in the workspace for inspection."
+    set_status publish failed $(( $(date +%s) - t0 )) "possible secret in the diff; nothing was pushed"; return 1
+  fi
+  if [ "${bad:-0}" != 0 ]; then
+    pub "NOT pushed: a commit message or author does not follow the commit rules."
+    set_status publish failed $(( $(date +%s) - t0 )) "commit rules not met; nothing was pushed"; return 1
+  fi
+
+  if [ "$DRY_RUN" = 1 ]; then
+    pub "Dry run: nothing was pushed and no pull request was opened."
+    pub "Would have been: $([ "$VERDICT" = PASS ] && echo "a pull request" || echo "a draft pull request")$([ "$migration" = 1 ] && echo ", label needs-migration")."
+    set_status publish skipped 0 "dry run (verdict $VERDICT, migration $migration, protected files $protected)"; return 0
+  fi
+  if ! command -v gh >/dev/null 2>&1; then pub "gh is not installed; the branch was not pushed."; set_status publish failed 0 "gh not installed"; return 1; fi
+
+  slug="$(repo_slug)"
+  if ! with_timeout 180 git -C "$REPO" push --quiet --force origin "$sha:refs/heads/daily/$DATE" >> "$RUN_LOG" 2>&1; then
+    pub "The push to GitHub failed (see run.log)."; set_status publish failed $(( $(date +%s) - t0 )) "git push failed"; return 1
+  fi
+  gh label create daily-agent --repo "$slug" --color 202a31 --description "Opened by the daily agent run" --force >> "$RUN_LOG" 2>&1
+  labels="daily-agent"
+  if [ "$migration" = 1 ]; then gh label create needs-migration --repo "$slug" --color fdf0d9 --description "Contains a database migration to apply by hand" --force >> "$RUN_LOG" 2>&1; labels="$labels,needs-migration"; fi
+  [ "$VERDICT" = PASS ] && [ "$BUILD_OK" = 1 ] || draft="--draft"
+
+  body="$OUT_DIR/pr-body.md"
+  {
+    echo "Daily run $DATE. Review verdict: **$VERDICT**. Build check: **$([ "$BUILD_OK" = 1 ] && echo passed || echo failed)**."
+    [ "$migration" = 1 ] && { echo; echo "**Needs a migration applied by hand** before the new behaviour is live: $(printf '%s\n' "$files" | grep '^supabase/migrations/' | sed 's/^/`/;s/$/`/' | tr '\n' ' ')"; }
+    [ "$protected" = 1 ] && { echo; echo "**Touches pipeline, deployment or package files.** Read those changes with extra care."; }
+    echo; echo "## Plan"; echo; [ -n "$(ws_file plan.md)" ] && head -c 20000 "$WORK/plan.md"
+    echo; echo "## Review"; echo; [ -n "$(ws_file review.md)" ] && head -c 20000 "$WORK/review.md" || echo "No review was produced."
+  } > "$body"
+
+  PR_URL="$(with_timeout 120 gh pr view "daily/$DATE" --repo "$slug" --json url,state --jq 'select(.state=="OPEN") | .url' 2>/dev/null || true)"
+  if [ -n "$PR_URL" ]; then
+    with_timeout 120 gh pr edit "$PR_URL" --title "$TITLE" --body-file "$body" --add-label "$labels" >> "$RUN_LOG" 2>&1
+  else
+    # shellcheck disable=SC2086
+    PR_URL="$(with_timeout 120 gh pr create --repo "$slug" --base main --head "daily/$DATE" --title "$TITLE" --body-file "$body" --label "$labels" $draft 2>> "$RUN_LOG" | grep -Eo 'https://github\.com/[^ ]+/pull/[0-9]+' | tail -n 1)"
+  fi
+  if [ -z "$PR_URL" ]; then pub "The branch was pushed but the pull request could not be opened (see run.log)."; set_status publish failed $(( $(date +%s) - t0 )) "gh pr create failed"; return 1; fi
+  pub "Pull request: $PR_URL ($([ -n "$draft" ] && echo draft || echo "ready for review"), labels: $labels)"
+  note="PR $PR_URL"
+
+  if [ "${AUTO_MERGE:-0}" != 1 ]; then pub "Auto-merge is off: waiting for the founder to review and merge."
+  elif [ "$VERDICT" != PASS ]; then pub "Not merged: the review verdict is $VERDICT."
+  elif [ "$BUILD_OK" != 1 ]; then pub "Not merged: the orchestrator's build check failed."
+  elif [ "$migration" = 1 ]; then pub "Not merged: it contains a migration that has to be applied by hand first."
+  elif [ "$protected" = 1 ]; then pub "Not merged: it touches pipeline, deployment or package files."
+  elif with_timeout 180 gh pr merge "$PR_URL" --squash --delete-branch --subject "$TITLE" --body "" >> "$RUN_LOG" 2>&1; then
+    MERGED=1; pub "Merged into main (squash). Vercel deploys production from main."; note="$note, merged"
+    update_container
+  else pub "The merge failed (see run.log); the pull request stays open."
+  fi
+  set_status publish ok $(( $(date +%s) - t0 )) "$note"
+}
+
+# One-line messages, one author. Anything else is squashed into a single commit with the plan's title.
+enforce_commit_rules() {
+  local bad
+  bad="$(ws 60 git log --format='%an|%cn|%b' "$BASE_SHA..HEAD" | grep -vc "^$GIT_NAME|$GIT_NAME|\$" || true)"
+  if [ "${bad:-0}" != 0 ]; then
+    log "[publish] squashing: some commits had a message body or another author"
+    ws 60 git reset --quiet --soft "$BASE_SHA" > /dev/null && ws 60 git commit --quiet -m "$TITLE" > /dev/null
+  fi
+}
+
+# True when the diff contains one of this machine's own secrets or an obvious key pattern.
+secret_in_diff() {
+  local diff="$OUT_DIR/.diff.tmp" hit=1 v
+  git -C "$REPO" diff "$1" "$2" > "$diff"
+  for v in "${CLAUDE_CODE_OAUTH_TOKEN:-}" "${SMTP_PASS:-}" "${CRON_SECRET:-}"; do
+    if [ "${#v}" -ge 8 ] && grep -qF -- "$v" "$diff"; then hit=0; fi
+  done
+  if grep -E '^\+' "$diff" | grep -Eq 'sk-ant-[A-Za-z0-9_-]{20,}|sk_live_[A-Za-z0-9]{16,}|sb_secret_[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}'; then hit=0; fi
+  rm -f "$diff"
+  return "$hit"
+}
+
+# After a merge: wait for the image build of the merge commit, then update this server's container.
+# Only the FoundReach compose project is touched.
+update_container() {
+  local slug merge_sha run_id i
+  [ "${UPDATE_CONTAINER:-1}" = 1 ] || { pub "Container update is turned off (UPDATE_CONTAINER=0)."; return 0; }
+  [ -f "$APP_DIR/docker-compose.yml" ] || { pub "No container on this machine ($APP_DIR), nothing to update."; return 0; }
+  slug="$(repo_slug)"
+  with_timeout 120 git -C "$REPO" fetch --quiet origin >> "$RUN_LOG" 2>&1
+  merge_sha="$(git -C "$REPO" rev-parse origin/main)"
+  run_id=""
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    run_id="$(gh run list --repo "$slug" --workflow docker.yml --branch main --limit 5 --json databaseId,headSha --jq ".[] | select(.headSha==\"$merge_sha\") | .databaseId" 2>/dev/null | head -n 1)"
+    [ -n "$run_id" ] && break; sleep 15
+  done
+  if [ -z "$run_id" ]; then pub "The image build for the merge was not found; the container was left as it is."; return 0; fi
+  log "[publish] waiting for image build $run_id"
+  if ! with_timeout 1800 gh run watch "$run_id" --repo "$slug" --exit-status --interval 20 >> "$RUN_LOG" 2>&1; then
+    pub "The image build did not succeed in time; the container was left as it is."; return 0
+  fi
+  if ( cd "$APP_DIR" && sudo -n docker compose pull >> "$RUN_LOG" 2>&1 && { docker compose up -d >> "$RUN_LOG" 2>&1 || sudo -n docker compose up -d >> "$RUN_LOG" 2>&1; } ); then
+    sleep 8
+    if curl -fsS -m 10 http://127.0.0.1:3010/healthz >> "$RUN_LOG" 2>&1; then pub "The container on this server was updated and is healthy."
+    else pub "The container was updated but its health check did not answer yet."; fi
+  else
+    pub "Updating the container failed (see run.log); it keeps running the previous image."
+  fi
+}
+
+# ------------------------------------------------------------------------------------------------
+# Report, email, housekeeping (trusted side)
+# ------------------------------------------------------------------------------------------------
+collect_work() {
+  # Stage output is copied as plain files; links are not followed.
+  local f
+  work_dir_ok || return 0
+  for f in "$WORK"/*; do
+    case "$(basename "$f")" in
+      # Only what the stages are meant to hand over; the script's own records are never replaced.
+      research.md|reviewed.md|plan.md|design.md|build.md|review.md|report.html) ;;
+      *) continue ;;
+    esac
+    [ -f "$f" ] && [ ! -L "$f" ] && [ "$(wc -c < "$f")" -lt 2000000 ] && cp -f "$f" "$OUT_DIR/" 2>/dev/null
+  done
+  return 0
+}
+
+html_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+
+# If the report stage left nothing usable, the orchestrator writes a plain report itself.
+finish_report() {
+  local r="$OUT_DIR/report.html"
+  if [ -f "$r" ] && grep -qi '<html' "$r" && [ "$(wc -c < "$r")" -gt 400 ]; then return 0; fi
+  log "[report] no usable report.html from the report stage; writing the fallback report"
+  {
+    echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>FoundReach daily report</title></head>'
+    echo '<body style="margin:0;padding:0;background:#f6f7f3;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#222923;font-size:15px;line-height:1.5">'
+    echo '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f6f7f3"><tr><td align="center" style="padding:16px">'
+    echo '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#ffffff;border:1px solid #e3e7dc">'
+    echo "<tr><td style=\"background:#202a31;color:#f3f5ee;padding:20px\"><div style=\"font-size:20px;font-weight:bold\">FoundReach daily report</div><div style=\"color:#b9c2b5\">$DATE</div></td></tr>"
+    echo '<tr><td style="padding:20px">'
+    if [ "${AI_OK:-1}" = 0 ]; then
+      echo "<p style=\"background:#fdf0d9;color:#6b4400;padding:12px;margin:0 0 16px\"><strong>The AI stages did not run.</strong> $(printf '%s' "$AI_WHY" | html_escape)</p>"
+    else
+      echo '<p style="background:#fdf0d9;color:#6b4400;padding:12px;margin:0 0 16px">The report stage did not produce a report today, so this is the plain summary written by the script.</p>'
+    fi
+    [ -n "${PR_URL:-}" ] && echo "<p>Pull request: <a href=\"$(printf '%s' "$PR_URL" | html_escape)\" style=\"color:#34490f\">$(printf '%s' "$PR_URL" | html_escape)</a></p>"
+    echo '<p style="font-weight:bold;margin:16px 0 8px">Steps</p><table role="presentation" width="100%" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-size:14px">'
+    awk -F '\t' '{print $1 "\t" $2 "\t" $4}' "$STATUS_FILE" | html_escape | awk -F '\t' '{printf "<tr><td style=\"border-top:1px solid #e3e7dc;vertical-align:top\"><strong>%s</strong></td><td style=\"border-top:1px solid #e3e7dc;vertical-align:top\">%s</td><td style=\"border-top:1px solid #e3e7dc;color:#59645a\">%s</td></tr>\n", $1, $2, $3}'
+    echo '</table>'
+    if [ -f "$OUT_DIR/publish.md" ]; then echo '<p style="font-weight:bold;margin:16px 0 8px">Publishing</p><pre style="white-space:pre-wrap;font-family:inherit;margin:0">'; html_escape < "$OUT_DIR/publish.md"; echo '</pre>'; fi
+    if [ -f "$REPO/automation/work/collect-last.txt" ]; then echo '<p style="font-weight:bold;margin:16px 0 8px">Data collection</p><pre style="white-space:pre-wrap;font-family:inherit;margin:0">'; head -c 3000 "$REPO/automation/work/collect-last.txt" | html_escape; echo '</pre>'; fi
+    echo "<p style=\"color:#59645a;margin:16px 0 0\">Full log on the server: $(printf '%s' "$RUN_LOG" | html_escape)</p>"
+    echo '</td></tr></table></td></tr></table></body></html>'
+  } > "$r"
+}
+
+send_email() {
+  local rc
+  if [ "$DRY_RUN" = 1 ]; then log "[email] dry run: not sent. Report: $OUT_DIR/report.html"; set_status email skipped 0 "dry run"; return 0; fi
+  if [ -z "${SMTP_HOST:-}" ] || [ -z "${REPORT_TO:-}" ]; then
+    log "[email] SMTP is not configured (SMTP_HOST / REPORT_TO missing in $BASE/.env). The report stays on disk: $OUT_DIR/report.html"
+    set_status email skipped 0 "SMTP not configured; report kept on disk"; return 0
+  fi
+  with_timeout 120 python3 "$REPO/automation/send_report.py" "$OUT_DIR/report.html" --date "$DATE" >> "$RUN_LOG" 2>&1; rc=$?
+  if [ "$rc" = 0 ]; then set_status email ok 0 "sent to $REPORT_TO"; else set_status email failed 0 "send_report.py exit $rc (see run.log); report kept on disk"; fi
+}
+
+remember() {
+  [ "$DRY_RUN" = 1 ] && { rm -f "$MEMORY/reviewed.md.new"; return 0; }
+  if [ -f "$MEMORY/reviewed.md.new" ]; then cat "$MEMORY/reviewed.md.new" >> "$MEMORY/reviewed.md"; rm -f "$MEMORY/reviewed.md.new"; fi
+  if [ -f "$MEMORY/reviewed.md" ]; then tail -n 400 "$MEMORY/reviewed.md" > "$MEMORY/reviewed.md.tmp" && mv "$MEMORY/reviewed.md.tmp" "$MEMORY/reviewed.md"; fi
+  [ "${AI_OK:-0}" = 1 ] && echo "- $DATE | ${TITLE:-no plan} | verdict ${VERDICT:-NONE} | ${PR_URL:-no pull request}$([ "${MERGED:-0}" = 1 ] && echo " | merged")" >> "$MEMORY/decisions.md"
+  if [ -f "$MEMORY/decisions.md" ]; then tail -n 120 "$MEMORY/decisions.md" > "$MEMORY/decisions.md.tmp" && mv "$MEMORY/decisions.md.tmp" "$MEMORY/decisions.md"; fi
+  return 0
+}
+
+# Keeps the 30 most recent daily folders (and the 5 most recent dry runs).
+prune_old() {
+  local d
+  ls -1d "$REPO"/automation/work/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] 2>/dev/null | sort -r | tail -n +31 | while IFS= read -r d; do rm -rf "$d"; done
+  ls -1d "$REPO"/automation/work/dry-run-* 2>/dev/null | sort -r | tail -n +6 | while IFS= read -r d; do rm -rf "$d"; done
+  return 0
+}
+
+# ------------------------------------------------------------------------------------------------
+# --stage NAME: one step, reusing today's workspace and work folder
+# ------------------------------------------------------------------------------------------------
+run_single_stage() {
+  [ -f "$STATUS_FILE" ] || : > "$STATUS_FILE"
+  case "$ONLY_STAGE" in
+    email) finish_report; send_email; return 0 ;;
+  esac
+  check_ai_ready
+  [ "$AI_OK" = 1 ] || { log "cannot run --stage $ONLY_STAGE: $AI_WHY"; return 1; }
+  if [ "$DRY_RUN" = 1 ] || [ ! -d "$WS/.git" ]; then prepare_workspace || return 1
+  else
+    mkdir -p "$WORK"; BASE_SHA="$(ws 60 git rev-parse main | tr -cd 'a-f0-9')"; MAIN_SHORT="$(printf '%s' "$BASE_SHA" | cut -c1-7)"
+    BASELINE="${BASELINE:-not checked in this run}"
+    COMMITS="$(ws 60 git rev-list --count "$BASE_SHA..HEAD" | tr -cd '0-9')"; COMMITS="${COMMITS:-0}"; CODE_FILES=0
+    HEAD_AFTER_BUILD="$(ws 60 git rev-parse HEAD | tr -cd 'a-f0-9')"; VERDICT=NONE; BUILD_OK=0; TITLE=""; PR_URL=""
+    [ -n "$(ws_file plan.md)" ] && TITLE="$(grep -m1 '^TITLE:' "$WORK/plan.md" | sed -e 's/^TITLE:[[:space:]]*//' | LC_ALL=C tr -cd '[:alnum:] .,:()/+&_-' | cut -c1-70)"
+    [ -n "$TITLE" ] || TITLE="Daily update $DATE"
+  fi
+  write_context
+  case "$ONLY_STAGE" in
+    research) run_stage research; note_reviewed ;;
+    plan) run_stage plan; after_plan ;;
+    design) run_stage design ;;
+    build) run_stage build; after_build ;;
+    review) run_stage review; after_review ;;
+    publish) after_build; after_review; publish ;;
+    report) run_stage report ;;
+  esac
+  collect_work
+  [ "$ONLY_STAGE" = report ] && finish_report
+  log "stage $ONLY_STAGE finished. Files: $OUT_DIR"
+  return 0
+}
+
+main "$@"
+exit $?

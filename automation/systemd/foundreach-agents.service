@@ -1,0 +1,30 @@
+[Unit]
+Description=FoundReach daily agent run (research, plan, design, build, review, report)
+Documentation=https://github.com/DabhiNavaghan/founder-crm/blob/main/automation/README.md
+Wants=network-online.target
+After=network-online.target foundreach-collect.service
+
+[Service]
+Type=oneshot
+User=opc
+Group=opc
+WorkingDirectory=/home/opc/apps/foundreach-agents/repo
+EnvironmentFile=-/home/opc/apps/foundreach-agents/.env
+Environment=PATH=/home/opc/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/bash /home/opc/apps/foundreach-agents/repo/automation/run-daily.sh
+# The stages stop themselves after DAILY_MAX_MINUTES (150). The extra time covers waiting for the
+# image build after an automatic merge. This is the hard stop behind both.
+TimeoutStartSec=240min
+KillMode=control-group
+# Each stage runs in its own transient unit with its own limits (see sandbox_exec in run-daily.sh).
+# These numbers cover the orchestrator itself, and the stages too if the sandbox is turned off.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUWeight=50
+MemoryHigh=2500M
+MemoryMax=3G
+TasksMax=512
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=foundreach-agents
