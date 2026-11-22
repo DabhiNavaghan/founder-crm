@@ -22,7 +22,7 @@ import smtplib
 import ssl
 import sys
 from email.message import EmailMessage
-from email.utils import formatdate, make_msgid
+from email.utils import formataddr, formatdate, make_msgid
 from html.parser import HTMLParser
 
 
@@ -91,12 +91,12 @@ def to_text(html):
 def build_message(html, date, sender, recipients):
     msg = EmailMessage()
     msg['Subject'] = 'FoundReach daily report – ' + date
-    msg['From'] = sender
+    # A named sender reads as a person-run mailbox rather than a bare address.
+    msg['From'] = sender if '<' in sender else formataddr(('FoundReach Reports', sender))
     msg['To'] = ', '.join(recipients)
     msg['Date'] = formatdate(localtime=False)
     domain = sender.rsplit('@', 1)[-1].strip('> ') if '@' in sender else None
     msg['Message-ID'] = make_msgid(domain=domain) if domain else make_msgid()
-    msg['Auto-Submitted'] = 'auto-generated'
     msg.set_content(to_text(html), subtype='plain', charset='utf-8')
     msg.add_alternative(html, subtype='html', charset='utf-8')
     return msg
