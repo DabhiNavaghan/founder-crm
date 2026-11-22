@@ -107,7 +107,8 @@ create index if not exists companies_catalog_badges_idx on public.companies usin
 -- p_rows: [{domain, slug, name, website, description, location, sector, industry, logo_url, careers_url, contact_url, linkedin_url,
 --           contact_email, hiring_email, source, source_url, badges:[{label, source}], batch_year, notes,
 --           people:[{first_name, last_name, role, role_category, linkedin_url}]}]
---   or a "badge add" row: {badge_only: true, domain and/or slug, badges:[...]}  (only ever touches a row that already exists)
+--   or a "badge add" row: {badge_only: true, domain and/or slug, badges:[...]}  (only ever touches a row that already exists:
+--   merges the badges; bumps verified_at only when one of the badges is from the row's own primary source)
 --
 -- A row is matched to the catalog by website domain. If the company is already there, only its empty fields are filled,
 -- its badges are merged and missing people are added (matched on lower-cased full name); nothing that is already set is overwritten.
@@ -173,9 +174,12 @@ begin
       if v_id is not null then
         select badges into v_old from public.companies where id = v_id;
         if v_only then
-          update public.companies
-             set badges = public.fr_merge_badges(badges, v_badges)
-           where id = v_id and badges is distinct from public.fr_merge_badges(badges, v_badges);
+          -- A badge add from the row's own primary source also confirms the row (weekly re-runs keep verified_at fresh).
+          update public.companies c
+             set badges = public.fr_merge_badges(c.badges, v_badges),
+                 verified_at = case when exists (select 1 from jsonb_array_elements(v_badges) b
+                                                  where b->>'source' = public.fr_slugify(c.source)) then now() else c.verified_at end
+           where c.id = v_id;
         else
           update public.companies c
              set badges = public.fr_merge_badges(c.badges, v_badges),
