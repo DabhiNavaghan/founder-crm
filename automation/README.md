@@ -11,8 +11,12 @@ Two jobs run on the server every day, started by systemd timers:
 
 Both go in `/home/opc/apps/foundreach-agents/.env` (mode 600, never committed):
 
-1. **`CLAUDE_CODE_OAUTH_TOKEN`**: run `claude setup-token` once and paste the token. Without it the
-   AI stages refuse to run and the log says exactly that; the collection job still runs.
+1. **`CLAUDE_CODE_OAUTH_TOKEN`**: run `claude setup-token` once and paste the token. This is the
+   robust option: the token is long-lived and made for unattended use. Without it the AI stages
+   fall back to the interactive Claude login of the `opc` user (`~/.claude/.credentials.json`) when
+   there is one. That works, but an interactive login has already expired once on this server, and
+   when it does the AI stages stop until someone logs in again. With neither, the AI stages refuse
+   to run and the log says exactly that; the collection job still runs.
 2. **SMTP account**: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`. Without it the report stays
    on disk and the log says where. Port 25 is blocked on Oracle Cloud; use 587 or 465.
 
@@ -189,9 +193,31 @@ systemd unit (`sandbox_exec` in `run-daily.sh`) with:
 - no `sudo` (`NoNewPrivileges`), a read-only system, a private `/tmp`;
 - `/home` hidden except the workspace and the state folder: the stages cannot see the app's `.env`,
   this automation's `.env`, the GitHub login, the trusted clone, or other applications' folders;
-- no Docker socket;
-- no secrets in the environment except the Claude token, and that only for the AI call itself;
+- an empty `/run`, so no Docker socket and no other service sockets;
+- no secrets in the environment except the Claude credential, and that only for the AI call itself;
 - memory, task and time limits.
+
+Claude itself is the one thing from the home folder a stage can see: the folder holding the
+`claude` program, read-only.
+
+When there is no token and the interactive login is used instead, the stage gets a copy of the one
+file `~/.claude/.credentials.json` in its own Claude config folder for the length of the AI call,
+and nothing else from `~/.claude`. The copy is writable on purpose: Claude refreshes a login by
+replacing that file, which a read-only mount or a mount of the single file would break. If the
+login was refreshed during the call, the script puts the new file back in `~/.claude`; either way
+the copy is deleted after the call.
+
+In both modes the credential is present while an AI call runs, so during the build and review
+stages code the agent runs could read it (the token from its environment, or the copied file).
+Claude Code has a setting that strips credentials from the commands it runs
+(`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`), but it also switches on Claude's own shell sandbox, which
+needs `socat` and `bubblewrap`; those are not installed on this server, and with the setting on
+every shell command of the build stage failed. It is therefore not set.
+
+Two details of this server shaped the sandbox. SELinux does not allow hiding the Docker socket by
+mounting over it, so the whole of `/run` is replaced by an empty folder instead. And SELinux does
+not let systemd give a unit a file from a home folder as its input or output, so the script feeds
+every stage through pipes.
 
 The script itself runs outside that sandbox from the **trusted clone** (`repo/`), which no stage
 can reach. The workspace is recreated for every run. To publish, the script fetches the branch from

@@ -34,7 +34,10 @@ main() {
   TOKEN_ENV=""; CLEAN_DIRS=""
 
   if [ "$DRY_RUN" = 1 ]; then
-    TMP="$(mktemp -d "${TMPDIR:-/tmp}/foundreach-dry.XXXXXX")"; TMP="$(cd "$TMP" && pwd -P)"
+    # On the server the throwaway clone sits next to the trusted clone: the stage sandbox has its
+    # own private /tmp, so a folder under /tmp could not be shared with it.
+    if [ "$(uname -s)" = Linux ]; then TMP="$(mktemp -d "$BASE/dry-run.XXXXXX")"; else TMP="$(mktemp -d "${TMPDIR:-/tmp}/foundreach-dry.XXXXXX")"; fi
+    TMP="$(cd "$TMP" && pwd -P)"
     WS="$TMP/workspace"; STATE="$TMP/state"
     OUT_DIR="$REPO/automation/work/dry-run-$DATE-$(date -u +%H%M%S)"
     [ "$KEEP" = 1 ] || CLEAN_DIRS="$TMP"
@@ -136,6 +139,8 @@ set_status() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$STATUS_FILE"; 
 status_of() { awk -F '\t' -v s="$1" '$1==s{r=$2} END{print r}' "$STATUS_FILE" 2>/dev/null; }
 
 cleanup() {
+  # If the run is cut short mid-stage, a refreshed Claude login is still saved.
+  [ "${AUTH:-}" = login ] && login_out 2>/dev/null
   [ -n "${TOKEN_ENV:-}" ] && rm -f "$TOKEN_ENV"
   [ -n "${LOCK_DIR:-}" ] && rmdir "$LOCK_DIR" 2>/dev/null
   [ -n "${CLEAN_DIRS:-}" ] && rm -rf "$CLEAN_DIRS"
@@ -183,24 +188,24 @@ choose_sandbox() {
     elif ! sudo -n true 2>/dev/null; then SANDBOX_WHY="sudo -n is not available, and starting a transient unit needs it"
     fi
   fi
-  TOOL_PATH=""; RO_BINDS=""
-  local tool path real dir top
+  # Where the tools live. A tool installed under a home folder (claude is) is made visible to the
+  # sandbox read-only, and only its own folder: the rest of the home folder stays hidden.
+  TOOL_PATH=""; RO_BINDS=""; CLAUDE_BIN=""
+  local tool path real dir bind
   for tool in claude node npm git bash; do
     path="$(command -v "$tool" 2>/dev/null || true)"; [ -n "$path" ] || continue
-    dir="$(dirname "$path")"
-    case ":$TOOL_PATH:" in *":$dir:"*) ;; *) TOOL_PATH="${TOOL_PATH:+$TOOL_PATH:}$dir" ;; esac
     real="$(readlink -f "$path" 2>/dev/null || echo "$path")"
-    for p in "$path" "$real"; do
-      case "$p" in
-        "$HOME"/*) top="$HOME/$(printf '%s' "${p#"$HOME"/}" | cut -d/ -f1)" ;;
-        /home/*|/root/*) top="$(dirname "$p")" ;;
-        *) continue ;;
-      esac
-      case " $RO_BINDS " in *" $top "*) ;; *) RO_BINDS="${RO_BINDS:+$RO_BINDS }$top" ;; esac
-    done
+    case "$real" in
+      /home/*|/root/*)
+        if [ "$tool" = claude ]; then bind="$(dirname "$real")"; else bind="$(dirname "$(dirname "$real")")"; fi
+        case " $RO_BINDS " in *" $bind "*) ;; *) RO_BINDS="${RO_BINDS:+$RO_BINDS }$bind" ;; esac
+        dir="$(dirname "$real")" ;;
+      *) dir="$(dirname "$path")" ;;
+    esac
+    [ "$tool" = claude ] && CLAUDE_BIN="$real"
+    case ":$TOOL_PATH:" in *":$dir:"*) ;; *) TOOL_PATH="${TOOL_PATH:+$TOOL_PATH:}$dir" ;; esac
   done
-  TOOL_PATH="$TOOL_PATH:/usr/local/bin:/usr/bin:/bin"
-  CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"
+  TOOL_PATH="${TOOL_PATH:+$TOOL_PATH:}/usr/local/bin:/usr/bin:/bin"
 }
 
 # sandbox_exec SECONDS WITH_TOKEN(0|1) STDIN_FILE STDOUT_FILE STDERR_FILE cmd...
@@ -212,24 +217,31 @@ sandbox_exec() {
   [ "$in" = - ] && in=/dev/null
   if [ "$SANDBOX" = systemd ]; then
     unit="foundreach-agent-$$-$(date +%s)-$RANDOM"
-    local args
+    # systemd-run looks the program up with root's PATH, so it gets the full path.
+    local args first="$1"
+    case "$first" in */*) ;; *) first="$(PATH="$TOOL_PATH" command -v "$1" 2>/dev/null || echo "$1")" ;; esac
+    # ...and it is started through env: SELinux does not let systemd itself execute a program that
+    # lives in a home folder (claude does), while a process inside the unit may.
+    shift; set -- /usr/bin/env "$first" "$@"
     args=(sudo -n systemd-run --quiet --collect --wait --pipe --unit "$unit"
       --uid "$(id -un)" --gid "$(id -gn)" --working-directory "$WS"
       -p NoNewPrivileges=yes -p ProtectSystem=strict -p ProtectHome=tmpfs -p PrivateTmp=yes -p PrivateDevices=yes
       -p ProtectKernelTunables=yes -p ProtectKernelModules=yes -p ProtectControlGroups=yes
       -p RestrictSUIDSGID=yes -p LockPersonality=yes
       -p "BindPaths=$WS $STATE" -p "ReadWritePaths=$WS $STATE"
-      -p InaccessiblePaths=-/run/docker.sock -p InaccessiblePaths=-/run/containerd -p InaccessiblePaths=-/run/podman
+      -p TemporaryFileSystem=/run:ro
       -p "MemoryMax=${AGENT_MEMORY_MAX:-3G}" -p MemorySwapMax=0 -p TasksMax=1024 -p CPUWeight=50 -p Nice=10
       -p "RuntimeMaxSec=$secs"
       --setenv "HOME=$STATE/home" --setenv "PATH=$TOOL_PATH" --setenv "CLAUDE_CONFIG_DIR=$STATE/claude"
-      --setenv LANG=C.UTF-8 --setenv DISABLE_AUTOUPDATER=1 --setenv CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 --setenv CI=1
+      --setenv LANG=C.UTF-8 --setenv DISABLE_AUTOUPDATER=1 --setenv CI=1
       --setenv GIT_CONFIG_GLOBAL=/dev/null --setenv GIT_CONFIG_NOSYSTEM=1
       --setenv "GIT_AUTHOR_NAME=$GIT_NAME" --setenv "GIT_AUTHOR_EMAIL=$GIT_EMAIL"
       --setenv "GIT_COMMITTER_NAME=$GIT_NAME" --setenv "GIT_COMMITTER_EMAIL=$GIT_EMAIL")
     [ -n "$RO_BINDS" ] && args+=(-p "BindReadOnlyPaths=$RO_BINDS")
     [ "$with_token" = 1 ] && [ -n "$TOKEN_ENV" ] && args+=(-p "EnvironmentFile=$TOKEN_ENV")
-    with_timeout $((secs + 60)) "${args[@]}" -- "$@" < "$in" > "$out" 2> "$err"; rc=$?
+    # SELinux does not let systemd hand a unit a file from a home folder as its input or output,
+    # so all three streams go through pipes.
+    cat "$in" | with_timeout $((secs + 60)) "${args[@]}" -- "$@" 2> >(cat > "$err") | cat > "$out"; rc="${PIPESTATUS[1]}"
     if [ "$rc" = 124 ]; then sudo -n systemctl stop "$unit" 2>/dev/null; fi
   else
     (
@@ -238,7 +250,7 @@ sandbox_exec() {
       [ "$with_token" = 1 ] || unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY
       # Isolated tool state. A dry run that uses this machine's own Claude login keeps its normal home.
       [ "${USE_LOCAL_LOGIN:-0}" = 1 ] || export HOME="$STATE/home" CLAUDE_CONFIG_DIR="$STATE/claude"
-      export PATH="$TOOL_PATH" DISABLE_AUTOUPDATER=1 CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 CI=1
+      export PATH="$TOOL_PATH" DISABLE_AUTOUPDATER=1 CI=1
       # Stages never use this user's own git settings or hooks.
       export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
       export GIT_AUTHOR_NAME="$GIT_NAME" GIT_AUTHOR_EMAIL="$GIT_EMAIL" GIT_COMMITTER_NAME="$GIT_NAME" GIT_COMMITTER_EMAIL="$GIT_EMAIL"
@@ -283,28 +295,52 @@ ws_file() {
   if [ -f "$f" ] && [ ! -L "$f" ] && [ "$(wc -c < "$f")" -gt 0 ] && [ "$(wc -c < "$f")" -lt 2000000 ]; then echo "$f"; fi
 }
 
+# One sandboxed unit runs every probe and prints one line per probe, so "blocked as intended" can be
+# told apart from "the unit never started": without the start marker nothing counts as a pass.
 selftest() {
-  local fail=0 t="$STATE/selftest.out"
+  local t="$STATE/selftest.out" rc fail=0 n
   echo "sandbox: $SANDBOX ${SANDBOX_WHY:+($SANDBOX_WHY)}"
   if [ "$SANDBOX" != systemd ] || [ -n "$SANDBOX_WHY" ]; then echo "FAIL  the systemd sandbox is not available here"; return 1; fi
-  WS="$STATE/selftest-ws"; mkdir -p "$WS"
-  check() { # check "description" expected_status cmd...
-    local what="$1" want="$2" rc; shift 2
-    sandbox_exec 60 0 - "$t" "$t.err" "$@"; rc=$?
-    if { [ "$want" = ok ] && [ "$rc" = 0 ]; } || { [ "$want" = fail ] && [ "$rc" != 0 ]; }; then echo "PASS  $what"; else echo "FAIL  $what (status $rc) $(head -c 300 "$t.err" | tr '\n' ' ')"; fail=1; fi
-  }
-  check "a stage can write in its workspace" ok bash -c 'echo ok > selftest.txt && rm selftest.txt'
-  check "a stage cannot use sudo" fail sudo -n true
-  check "a stage cannot see the app folder ($APP_DIR)" fail test -e "$APP_DIR"
-  check "a stage cannot see the settings file ($BASE/.env)" fail test -e "$BASE/.env"
-  check "a stage cannot see the trusted clone" fail test -e "$REPO/automation"
-  check "a stage cannot write to /etc" fail bash -c 'echo x > /etc/foundreach-selftest'
-  check "a stage cannot reach the Docker socket" fail test -r /run/docker.sock
-  check "claude starts" ok claude --version
-  check "node starts" ok node --version
-  check "npm starts" ok npm --version
-  check "git starts" ok git --version
+  WS="$STATE/selftest-ws"; rm -rf "$WS"; mkdir -p "$WS"
+  cat > "$WS/probe.sh" <<'PROBE'
+echo "STARTED as $(id -un) in $(pwd)"
+yes() { if "$@" >/dev/null 2>&1; then echo "PASS  $what"; else echo "FAIL  $what"; fi; }
+no()  { if "$@" >/dev/null 2>&1; then echo "FAIL  $what (it was possible)"; else echo "PASS  $what"; fi; }
+what="a stage can write in its workspace";            yes sh -c 'echo ok > selftest.txt && rm selftest.txt'
+what="a stage can write in its state folder";         yes sh -c 'echo ok > "$HOME/selftest.txt" && rm "$HOME/selftest.txt"'
+what="a stage cannot use sudo";                       no sudo -n true
+what="a stage cannot see the app folder ($P_APP)";    no test -e "$P_APP"
+what="a stage cannot see the settings file";          no test -e "$P_BASE/.env"
+what="a stage cannot see the trusted clone";          no test -e "$P_REPO/automation"
+what="a stage cannot see the Claude login folder";    no test -e "$P_HOME/.claude"
+what="a stage cannot see the GitHub login";           no test -e "$P_HOME/.config/gh"
+what="a stage cannot see SSH keys";                   no test -e "$P_HOME/.ssh"
+what="a stage cannot write to /etc";                  no sh -c 'echo x > /etc/foundreach-selftest'
+what="a stage cannot write to /usr/local";            no sh -c 'echo x > /usr/local/foundreach-selftest'
+what="a stage cannot reach the Docker socket";        no test -e /run/docker.sock
+what="a stage cannot use Docker";                     no docker ps
+what="the environment holds no mail or cron secret";  no sh -c 'env | grep -Eq "^(SMTP_PASS|CRON_SECRET|GH_TOKEN|GITHUB_TOKEN)="'
+what="claude starts ($P_CLAUDE)";                     yes "$P_CLAUDE" --version
+what="node starts";                                   yes node --version
+what="npm starts";                                    yes npm --version
+what="git starts";                                    yes git --version
+what="the network is reachable (name lookup)";        yes getent hosts api.anthropic.com
+echo "FINISHED"
+PROBE
+  sandbox_exec 120 0 - "$t" "$t.err" env "P_APP=$APP_DIR" "P_BASE=$BASE" "P_REPO=$REPO" "P_HOME=$HOME" "P_CLAUDE=$CLAUDE_BIN" bash "$WS/probe.sh"; rc=$?
+  if ! grep -q '^STARTED ' "$t" || ! grep -q '^FINISHED$' "$t"; then
+    echo "FAIL  the sandboxed unit did not start or did not finish (status $rc). Nothing below was tested."
+    head -c 600 "$t.err" | sed 's/^/      /'
+    echo "      More: sudo journalctl -n 30 --no-pager | grep foundreach-agent"
+    fail=1
+  else
+    grep -E '^(PASS|FAIL)  ' "$t"
+    n="$(grep -c '^FAIL  ' "$t" || true)"; [ "${n:-0}" = 0 ] || fail=1
+  fi
   rm -rf "$WS" "$t" "$t.err"
+  if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then echo "auth: CLAUDE_CODE_OAUTH_TOKEN is set (used for the AI stages)"
+  elif [ -f "$HOME/.claude/.credentials.json" ]; then echo "auth: no token; the AI stages will use this user's Claude login ($HOME/.claude/.credentials.json)"
+  else echo "auth: MISSING. No CLAUDE_CODE_OAUTH_TOKEN and no Claude login; the AI stages will not run"; fi
   [ "$fail" = 0 ] && echo "sandbox self-test passed" || echo "sandbox self-test FAILED"
   return "$fail"
 }
@@ -330,23 +366,50 @@ update_trusted_clone() {
   fi
 }
 
+# How the AI stages authenticate, in order of preference:
+#   token   CLAUDE_CODE_OAUTH_TOKEN from the settings file (long-lived; made for unattended use)
+#   login   this user's interactive Claude login, when ~/.claude/.credentials.json exists
+#   local   macOS dry run only: the login in the keychain of the machine the dry run is on
 check_ai_ready() {
-  AI_OK=1; AI_WHY=""; USE_LOCAL_LOGIN=0
+  AI_OK=1; AI_WHY=""; USE_LOCAL_LOGIN=0; AUTH=token; LOGIN_FILE="$HOME/.claude/.credentials.json"
   if [ -z "$CLAUDE_BIN" ]; then AI_OK=0; AI_WHY="the claude command was not found on PATH"
   elif [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-    if [ "$DRY_RUN" = 1 ] && [ "$SANDBOX" = none ]; then
-      USE_LOCAL_LOGIN=1; log "CLAUDE_CODE_OAUTH_TOKEN is not set; this dry run uses the Claude login of this machine"
+    if [ -f "$LOGIN_FILE" ] && [ ! -L "$LOGIN_FILE" ]; then
+      AUTH=login; log "CLAUDE_CODE_OAUTH_TOKEN is not set; using this user's Claude login. It can expire: a token from 'claude setup-token' is the robust option"
+    elif [ "$DRY_RUN" = 1 ] && [ "$SANDBOX" = none ]; then
+      AUTH=local; USE_LOCAL_LOGIN=1; log "CLAUDE_CODE_OAUTH_TOKEN is not set; this dry run uses the Claude login of this machine"
     else
-      AI_OK=0; AI_WHY="CLAUDE_CODE_OAUTH_TOKEN is not set. Run 'claude setup-token' once and put the token in $BASE/.env"
+      AI_OK=0; AI_WHY="CLAUDE_CODE_OAUTH_TOKEN is not set and there is no Claude login ($LOGIN_FILE). Run 'claude setup-token' once and put the token in $BASE/.env"
     fi
   fi
   if [ "$AI_OK" = 1 ] && [ -n "$SANDBOX_WHY" ]; then AI_OK=0; AI_WHY="the stage sandbox cannot start: $SANDBOX_WHY (run automation/run-daily.sh --selftest)"; fi
   if [ "$AI_OK" = 0 ]; then log "AI stages will NOT run: $AI_WHY"; return 0; fi
-  if [ "$SANDBOX" = systemd ]; then
+  if [ "$AUTH" = token ] && [ "$SANDBOX" = systemd ]; then
     # The token reaches the AI stages through a file only systemd reads; it is never on a command line.
     TOKEN_ENV="$BASE/.agent-token.env"
     ( umask 077; printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$CLAUDE_CODE_OAUTH_TOKEN" > "$TOKEN_ENV" )
   fi
+}
+
+# Login mode. The stage gets a copy of the one credentials file, in its own Claude config folder,
+# for the length of the AI call; nothing else from ~/.claude is visible to it. Claude may refresh
+# the login during the call and writes the new credentials by replacing the file, which a read-only
+# or single-file mount would break. So the copy is writable, and a refreshed copy is put back.
+login_in() {
+  [ "${AUTH:-}" = login ] || return 0
+  mkdir -p "$STATE/claude"
+  rm -rf "$STATE/claude/.credentials.json"
+  ( umask 077; cp "$LOGIN_FILE" "$STATE/claude/.credentials.json" )
+}
+login_out() {
+  [ "${AUTH:-}" = login ] || return 0
+  local f="$STATE/claude/.credentials.json" tmp
+  if [ -f "$f" ] && [ ! -L "$f" ] && [ "$(wc -c < "$f")" -lt 100000 ] && ! cmp -s "$f" "$LOGIN_FILE" \
+     && jq -e '.claudeAiOauth.refreshToken | strings | length > 20' "$f" >/dev/null 2>&1; then
+    tmp="$LOGIN_FILE.foundreach.$$"
+    if ( umask 077; cp "$f" "$tmp" ) && mv -f "$tmp" "$LOGIN_FILE"; then log "the Claude login was refreshed during the stage; the new credentials were saved"; fi
+  fi
+  rm -rf "$f"
 }
 
 prepare_workspace() {
@@ -361,7 +424,7 @@ prepare_workspace() {
     ( cd "$REPO" && tar cf - --exclude './automation/work' ./automation ./.gitignore ./tests ./package.json 2>/dev/null ) | ( cd "$WS" && tar xf - )
     git -C "$WS" add -A >> "$RUN_LOG" 2>&1
     git -C "$WS" -c user.name="$GIT_NAME" -c user.email="$GIT_EMAIL" commit --quiet -m "Dry-run overlay" >> "$RUN_LOG" 2>&1 || true
-    if [ -d "$REPO/node_modules" ]; then ln -s "$REPO/node_modules" "$WS/node_modules"; fi
+    if [ "$SANDBOX" = none ] && [ -d "$REPO/node_modules" ]; then ln -s "$REPO/node_modules" "$WS/node_modules"; fi
   else
     git -C "$WS" checkout --quiet -B main origin/main >> "$RUN_LOG" 2>&1
   fi
@@ -506,11 +569,13 @@ run_stage() {
   [ -n "$MODEL" ] && cmd+=(--model "$MODEL")
 
   log "[$stage] starting: $S_TURNS turns, $((secs / 60)) min, tools $S_TOOLS"
+  login_in
   sandbox_exec "$secs" 1 "$prompt" "$result" "$OUT_DIR/$stage.stderr.log" "${cmd[@]}"; rc=$?
+  login_out
   took=$(( $(date +%s) - t0 ))
 
   note="exit $rc"
-  if command -v jq >/dev/null 2>&1 && jq -e . "$result" >/dev/null 2>&1; then
+  if [ -s "$result" ] && command -v jq >/dev/null 2>&1 && jq -e . "$result" >/dev/null 2>&1; then
     jq -r '.result // ""' "$result" > "$OUT_DIR/$stage.final-message.md"
     note="$(jq -r '"turns \(.num_turns // "?"), \(.subtype // "?"), refused tool calls \((.permission_denials // []) | length)"' "$result")"
     jq -r '(.permission_denials // [])[] | "  refused: \(.tool_name) \(.tool_input.command // .tool_input.file_path // .tool_input.url // .tool_input.query // "" | tostring | .[0:160])"' "$result" >> "$RUN_LOG"

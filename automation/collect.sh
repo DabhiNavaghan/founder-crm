@@ -85,17 +85,21 @@ else RUNNER=native; fi
 
 # run_scraper SECONDS args...   runs scraper/multi.py; exit 124 on timeout
 run_scraper() {
-  local secs="$1" rc; shift
+  local secs="$1" rc began; shift
+  began="$(date +%s)"
   if [ "$RUNNER" = docker ]; then
     $DOCKER rm -f "$CONTAINER" >/dev/null 2>&1
     # The scraper needs nothing but the standard library, so the stock image runs it as it is.
     # It runs as this user, sees only the scraper folder, and is limited in memory and CPU.
-    with_timeout "$secs" $DOCKER run --rm --name "$CONTAINER" --user "$(id -u):$(id -g)" \
+    # --init: without it Python is process 1 in the container and ignores the stop signal.
+    with_timeout "$secs" $DOCKER run --rm --init --name "$CONTAINER" --user "$(id -u):$(id -g)" \
       --memory 1g --cpus 1 --pids-limit 256 --security-opt no-new-privileges --security-opt label=disable \
       --cap-drop ALL -e HOME=/tmp -e PYTHONUNBUFFERED=1 -e PYTHONDONTWRITEBYTECODE=1 \
       -v "$REPO/scraper:/scraper" -w /scraper "$IMAGE" python multi.py "$@" >> "$LOG" 2>&1
     rc=$?
-    if [ "$rc" = 124 ]; then $DOCKER stop -t 10 "$CONTAINER" >/dev/null 2>&1; fi
+    # Whatever happened, no container of ours is left running.
+    if [ "$rc" != 0 ]; then $DOCKER rm -f "$CONTAINER" >/dev/null 2>&1; fi
+    if [ "$rc" != 0 ] && [ $(( $(date +%s) - began )) -ge "$secs" ]; then rc=124; fi
     return "$rc"
   fi
   ( cd "$REPO/scraper" && PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 with_timeout "$secs" python3 multi.py "$@" ) >> "$LOG" 2>&1

@@ -47,7 +47,8 @@ else
 fi
 # Pushing the daily branch uses the GitHub login of gh, for this clone only.
 if command -v gh >/dev/null 2>&1; then
-  git -C "$BASE/repo" config credential.https://github.com.helper ''
+  git -C "$BASE/repo" config --unset-all credential.https://github.com.helper 2>/dev/null || true
+  git -C "$BASE/repo" config --add credential.https://github.com.helper ''
   git -C "$BASE/repo" config --add credential.https://github.com.helper '!gh auth git-credential'
 fi
 chmod +x "$BASE/repo/automation/"*.sh 2>/dev/null || true
@@ -86,7 +87,9 @@ done
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then ok "gh is logged in"; else need "gh is not logged in (gh auth login)"; fi
 if docker info >/dev/null 2>&1 || sudo -n docker info >/dev/null 2>&1; then ok "Docker is usable (the collection job runs the scraper in python:3.13-slim)"
 else echo "  note     Docker is not usable; the collection job will use this machine's python3"; fi
-if has_value CLAUDE_CODE_OAUTH_TOKEN; then ok "CLAUDE_CODE_OAUTH_TOKEN is set"; else need "CLAUDE_CODE_OAUTH_TOKEN in $BASE/.env (run: claude setup-token). Until then the AI stages do not run."; fi
+if has_value CLAUDE_CODE_OAUTH_TOKEN; then ok "CLAUDE_CODE_OAUTH_TOKEN is set"
+elif [ -f "$HOME/.claude/.credentials.json" ]; then echo "  note     no CLAUDE_CODE_OAUTH_TOKEN; the AI stages use this user's Claude login, which can expire. A token (claude setup-token) in $BASE/.env is the robust option."
+else need "CLAUDE_CODE_OAUTH_TOKEN in $BASE/.env (run: claude setup-token), or a Claude login for this user. Until then the AI stages do not run."; fi
 if has_value SMTP_HOST && has_value SMTP_USER && has_value SMTP_PASS; then ok "SMTP is set"; else need "SMTP_HOST, SMTP_USER and SMTP_PASS in $BASE/.env. Until then reports stay on disk."; fi
 if has_value REPORT_TO; then ok "REPORT_TO is set"; else need "REPORT_TO in $BASE/.env"; fi
 if [ -r /home/opc/apps/foundreach/.env ]; then ok "the app's .env is readable (database settings for the collection job)"; else need "/home/opc/apps/foundreach/.env is not readable; the collection job cannot load into the catalog"; fi
