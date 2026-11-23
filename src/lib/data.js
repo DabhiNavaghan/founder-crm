@@ -41,7 +41,9 @@ export const loadProfile = async () => (await one(supabase.from('sender_profiles
 // The catalog owner (the admin) is whoever owns catalog rows. One row is enough to know.
 export const ownsCatalog = async () => (await one(supabase.from('companies').select('id').eq('is_catalog', true).limit(1))).length > 0;
 
-export const claimCompany = slug => one(supabase.rpc('claim_company', { p_slug: slug }));
+// Team room (admin only). Keeps the raw answer so the screen can tell a refusal from a missing function.
+export const loadDashboard = (n = 30) => supabase.rpc('agent_dashboard', { p_runs: n });
+export const claimCompany =slug => one(supabase.rpc('claim_company', { p_slug: slug }));
 export const insertRow = (table, row) => one(supabase.from(table).insert(row).select().single());
 export const updateRow = (table, id, patch) => one(supabase.from(table).update(patch).eq('id', id).select().single());
 export const saveProfileRow = row => one(supabase.from('sender_profiles').upsert(row, { onConflict: 'owner_id' }).select().single());

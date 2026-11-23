@@ -125,3 +125,33 @@ a.facts:hover{border-color:var(--ink)}
 /* Profile */
 .profile{display:grid;gap:16px;max-width:760px}
 .profile textarea.field{min-height:76px}
+
+/* Team room (admin): hard-edged windows with a dark title bar */
+.win{margin-top:var(--s5);border:1px solid var(--line);border-radius:0;background:var(--surface)}
+.win-bar{display:flex;align-items:center;gap:var(--s2);padding:var(--s2) var(--s3);background:var(--band);color:var(--on-band-muted);font-size:var(--t-xs);font-variant-numeric:tabular-nums;letter-spacing:.06em}
+.win-dots{display:inline-flex;gap:var(--s1)}
+.win-dots i{width:var(--s2);height:var(--s2);background:var(--on-band-muted)}
+.win-body{padding:var(--s4)}
+.win .eyebrow{font-size:var(--t-xs);font-variant-numeric:tabular-nums}
+.win .grp-h{margin-bottom:var(--s3)}
+.win .grp-h:focus{outline:none}
+.win h3{display:flex;align-items:center;gap:var(--s2);margin-top:var(--s4);font:700 var(--t-base)/1.35 var(--font);color:var(--ink)}
+.win .list,.win .card,.win .grp-empty{border-radius:0}
+.win .list{margin-top:var(--s2)}
+.win .card{display:grid;gap:var(--s1);align-content:start}
+.st{display:inline-flex;align-items:center;gap:var(--s1)}
+.sq{flex:none;width:var(--s2);height:var(--s2);border:1px solid var(--field-line)}
+.sq-working{background:var(--accent);border-color:var(--accent-line)}
+.sq-done{background:var(--primary);border-color:var(--primary)}
+.sq-failed{background:var(--warn-ink);border-color:var(--warn-ink)}
+.sq-idle{background:none}
+.board{display:grid;gap:var(--s3)}
+.board-col h3{margin-top:0}
+.tl>li{display:grid;grid-template-columns:4.5em minmax(0,1fr);gap:var(--s3);padding:var(--s2) 0}
+.tl>li+li{border-top:1px solid var(--line)}
+.tl-t{color:var(--muted);font-variant-numeric:tabular-nums}
+.tl-x{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s1) var(--s2)}
+.pre{white-space:pre-line;overflow-wrap:anywhere;color:var(--body)}
+.go{display:inline-flex;align-items:center;min-height:var(--tap)}
+@media (max-width:599px){.top-app .nav.nav-admin{grid-template-columns:repeat(5,1fr)}}
+@media (min-width:900px){.board{grid-template-columns:repeat(5,minmax(0,1fr))}.win .board-col .task{padding:var(--s3)}}
