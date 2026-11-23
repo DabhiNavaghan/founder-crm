@@ -10,7 +10,7 @@ import { rpc } from './_lib/db.js';
 import { getNav } from './_lib/nav.js';
 import { SCRIPT } from './_lib/script.js';
 import {
-  SITE, PER_PAGE, SLUG_RE, BATCH_RE, COLLECTIONS, FILTER_KEYS, slugify, listUrl, batchLabel, batchName, quickView,
+  SITE, PER_PAGE, SLUG_RE, BATCH_RE, COLLECTIONS, COUNTRIES, FILTER_KEYS, slugify, listUrl, batchLabel, batchName, quickView,
   renderList, renderCompany, renderNew, renderCollections, renderAbout, renderNotFound, renderUnavailable,
   renderSitemapIndex, renderSitemapCompanies, renderSitemapPages,
 } from './_lib/render.js';
@@ -59,9 +59,24 @@ export function readFilters(query) {
   const viaSource = /^yc-([wxsf]\d{2})$/.exec(source);
   if (viaSource) f.batch = f.batch || viaSource[1].toUpperCase();
   else if (SLUG_RE.test(source)) f.source = source;
+  // Only a known country is kept (?country=india); anything else is ignored and never echoed.
+  const country = slugify(str(query.country, 40));
+  f.country = Object.hasOwn(COUNTRIES, country) ? country : '';
   const page = Number.parseInt(str(query.page, 6), 10);
   if (page > 1 && page <= 100000) f.page = page;
   return f;
+}
+
+// The list for /companies. With a country it calls catalog_list_country (migration 202611260001). Until that is applied
+// (404 / PGRST202), the United States falls back to catalog_list, which has only US rows then; any other country is empty.
+export async function listRows(f, call = rpc) {
+  if (!f.country) return call('catalog_list', listArgs(f));
+  try {
+    return await call('catalog_list_country', { p_country: f.country, ...listArgs(f) });
+  } catch (e) {
+    if (!(e && (e.status === 404 || e.code === 'PGRST202'))) throw e;
+    return f.country === 'united-states' ? call('catalog_list', listArgs(f)) : { total: 0, rows: [] };
+  }
 }
 const activeFilters = f => FILTER_KEYS.filter(k => f[k]);
 const listArgs = (f, extra = {}) => ({
@@ -75,7 +90,7 @@ const link = (label, url, count) => ({ label, url, count });
 // /companies: any combination of filters.
 async function listAll(res, query) {
   const f = readFilters(query);
-  const [facets, data, nav] = await Promise.all([rpc('catalog_facets'), rpc('catalog_list', listArgs(f)), getNav()]);
+  const [facets, data, nav] = await Promise.all([rpc('catalog_facets'), listRows(f), getNav()]);
   const total = Number(data?.total) || 0;
   if (f.page > 1 && f.page > Math.ceil(total / PER_PAGE)) return notFound(res);
   // Canonical and robots: one filter that has its own page points there; a search or two or more filters are not indexed.

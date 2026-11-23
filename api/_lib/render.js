@@ -263,8 +263,13 @@ const QUICK_VIEW = `<dialog class="qv" id="qv" aria-modal="true" aria-labelledby
 `;
 
 // ---------------------------------------------------------------- list URLs
-// filters: { q, sector, city, batch, year, source, hiring, page } with sector/city/source already slugified.
-export const FILTER_KEYS = ['q', 'sector', 'city', 'batch', 'year', 'source', 'hiring'];
+// filters: { q, sector, city, country, batch, year, source, hiring, page } with sector/city/source already slugified.
+export const FILTER_KEYS = ['q', 'sector', 'city', 'country', 'batch', 'year', 'source', 'hiring'];
+// Countries the directory can be browsed by: slug -> name. `place` is how a heading says "in ...".
+export const COUNTRIES = {
+  'united-states': { name: 'United States', place: 'the United States' },
+  india: { name: 'India', place: 'India' },
+};
 export function listUrl(basePath, filters, change = {}) {
   const f = { ...filters, ...change };
   const parts = [];
@@ -330,6 +335,7 @@ export function renderList({ kind = 'all', path = '/companies', labels = {}, cru
   const sectorName = f.sector ? text((find(facets?.industries, f.sector) || find(facets?.sectors, f.sector))?.value || f.sector) : '';
   const cityName = f.city ? text(find(facets?.cities, f.city)?.value || f.city) : '';
   const sourceName = f.source ? text((facets?.sources || []).find(o => o.slug === f.source)?.value || f.source) : '';
+  const country = Object.hasOwn(COUNTRIES, f.country || '') ? COUNTRIES[f.country] : null;
 
   const options = (list, current) => (list || []).map(o => {
     const value = slugify(o.value);
@@ -348,6 +354,7 @@ export function renderList({ kind = 'all', path = '/companies', labels = {}, cru
 <div class="f-q"><label class="sr-only" for="q">Search companies</label><input class="field" id="q" name="q" type="search" placeholder="Search by name or description" autocomplete="off" maxlength="80" value="${esc(f.q || '')}"></div>
 ${select('sector', 'Sector', `<option value="">All sectors</option>${options(industries, f.sector)}`)}
 ${select('city', 'City', `<option value="">All cities</option>${options(facets?.cities, f.city)}`)}
+${select('country', 'Country', `<option value="">All countries</option>${Object.entries(COUNTRIES).map(([slug, c]) => `<option value="${slug}"${country && slug === f.country ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}`)}
 ${select('source', 'Source or batch', `<option value="">All sources</option>${sourceOptions}`)}
 ${select('hiring', 'Hiring', `<option value="">Any hiring status</option><option value="1"${f.hiring ? ' selected' : ''}>Hiring only</option>`)}
 ${f.year ? `<input type="hidden" name="year" value="${esc(f.year)}">` : ''}<button class="btn btn-dark" type="submit">Search</button>
@@ -360,6 +367,7 @@ ${f.year ? `<input type="hidden" name="year" value="${esc(f.year)}">` : ''}<butt
     if (f.q) chip(`“${f.q}”`, 'Search ' + f.q, { q: '' });
     if (f.sector) chip(sectorName, 'Sector ' + sectorName, { sector: '' });
     if (f.city) chip(cityName, 'City ' + cityName, { city: '' });
+    if (country) chip(country.name, 'Country ' + country.name, { country: '' });
     if (f.source) chip(sourceName, 'Source ' + sourceName, { source: '' });
     if (f.batch) chip(batchLabel(f.batch) || f.batch, 'Batch ' + f.batch, { batch: '' });
     if (f.year) chip(String(f.year), 'Year ' + f.year, { year: '' });
@@ -372,7 +380,9 @@ ${f.year ? `<input type="hidden" name="year" value="${esc(f.year)}">` : ''}<butt
   const list = validRows(rows).length
     ? rowsList(rows) + '\n' + pager(urlOf, page, pages)
     : `<div class="state"><h2>No companies match these filters.</h2><p>Try removing a filter, or browse the newest additions.</p><div class="actions"><a class="btn btn-dark" href="/companies">Clear filters</a><a class="btn" href="/new">See new companies</a></div></div>`;
-  const results = `<section class="results" id="results" aria-label="Results">\n${count}\n${chipsHtml}\n${list}\n</section>\n<p class="sr-only" id="live" aria-live="polite"></p>`;
+  // A plain link into the India view, only on /companies and only when no country is chosen yet.
+  const browse = kind === 'all' && !country ? '<ul class="chips" aria-label="Browse by country"><li><a class="pill" href="/companies?country=india">Browse India</a></li></ul>\n' : '';
+  const results = `<section class="results" id="results" aria-label="Results">\n${count}\n${browse}${chipsHtml}\n${list}\n</section>\n<p class="sr-only" id="live" aria-live="polite"></p>`;
 
   // Headings and titles.
   const type = PAGE_TYPES[kind];
@@ -388,7 +398,9 @@ ${f.year ? `<input type="hidden" name="year" value="${esc(f.year)}">` : ''}<butt
     // "Fintech startups in Boston · YC S24, hiring now: founders, careers & contact"
     const tBatch = batchLabel(f.batch) || (f.year ? `YC ${f.year}` : '') || sourceName;
     const lead = sectorName || tBatch;
-    const subject = `${lead ? lead + ' startups' : 'Startups'}${cityName ? ' in ' + cityName : ''}${f.q ? ` matching “${f.q}”` : ''}`;
+    // A city already says where; the country is named only without one.
+    const place = cityName || (country ? country.place : '');
+    const subject = `${lead ? lead + ' startups' : 'Startups'}${place ? ' in ' + place : ''}${f.q ? ` matching “${f.q}”` : ''}`;
     const extras = [sectorName ? tBatch : '', f.hiring ? 'hiring now' : ''].filter(Boolean).join(', ');
     // The heading says what the list is filtered to, like the title does.
     h1 = filtered ? `${subject}${extras ? ' · ' + extras : ''}` : 'Startups you can actually reach';

@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""FoundReach: US startups from sources beyond Y Combinator.
+"""FoundReach: US and Indian startups from sources beyond the US Y Combinator scrape.
 
 Stages (all cached on disk, safe to stop and re-run):
   collect  - read each source's public portfolio listing / API           -> cache/sources/<slug>/
   enrich   - each candidate's own website: is it alive, description, US evidence, careers page,
              contact page, LinkedIn company page, public company emails, icon   -> cache/sites, cache/deep, cache/facts
-  build    - filter (US, operating, working site, description), dedupe on domain across sources and
+  build    - filter (US or India, operating, working site, description), dedupe on domain across sources and
              against the existing catalog, make slugs                    -> out/companies_multi.json
+
+India (founder task #2): 'yc-india' reads the public YC index for companies whose first listed location is in India,
+and Antler rows whose location tag is India get country 'IN'. India rows carry country 'India'; a source must state
+India, it is never guessed from a city or a domain. scripts/ingest.mjs holds them back until migration 202611260001 is applied.
 
 Usage: python3 multi.py collect|enrich|build|all [--only a16z,accel] [--limit N] [--refresh] [--show-hn]
   --refresh  re-download the source listings (the weekly manual refresh); website caches are kept.
@@ -53,6 +57,10 @@ SOURCES = {
                 'policy': 'robots.txt: "Allow: /"; no login; the /legal page has no clause about automated access or reuse.'},
     'accel': {'name': 'Accel', 'page': 'https://www.accel.com/companies', 'endpoint': 'https://www.accel.com/companies (JSON embedded in the page)',
               'policy': 'robots.txt allows / (only /admin/ and /api/ disallowed, neither is used); no login; no terms-of-use page found.'},
+    'yc-india': {'name': 'Y Combinator', 'page': 'https://www.ycombinator.com/companies',
+                 'endpoint': 'https://yc-oss.github.io/api/companies/all.json (public index, cached 7 days) + https://www.ycombinator.com/companies/<slug>',
+                 'policy': 'ycombinator.com robots.txt disallows only /verify/*, /companies with query strings and some /library queries; '
+                           '/companies/<slug> is allowed. Same pages scrape.py already reads, at most YC_PAGES_PER_RUN new pages a night, with a pause between them.'},
     'hacker-news': {'name': 'Hacker News', 'page': 'https://news.ycombinator.com/launches',
                     'endpoint': 'https://hn.algolia.com/api/v1/search_by_date (public documented HN Search API)',
                     'policy': 'Public API offered for programmatic use; no key, no login.'},
@@ -204,6 +212,106 @@ def collect_500(refresh):
     return out
 
 
+def antler_country(loc):
+    """Antler's first tag is the country: 'US' and 'IN' are kept, any other country is 'other', no tag is ''."""
+    loc = clean(loc)
+    if loc.upper() in ('US', 'USA', 'UNITED STATES'): return 'US'
+    if loc.lower() == 'india': return 'IN'
+    return 'other' if loc else ''
+
+
+# ---- Y Combinator, India. The index is public JSON; founders come from the YC company page (scrape.yc_company, cached per slug).
+YC_PAGES_PER_RUN = 150          # at most this many uncached YC company pages per run; the rest wait for the next night
+YC_INDEX_MAX_AGE = 7 * 86400    # re-download the public index when the cached copy is older than this
+YC_SEASON = {'winter': 'W', 'summer': 'S', 'fall': 'F', 'spring': 'X'}
+
+
+def yc_city(all_locations):
+    """'Bengaluru, KA, India; Remote' -> 'Bengaluru'. Only the first listed location counts; a bare 'Remote' is no city."""
+    first = clean((all_locations or '').split(';')[0])
+    parts = [p.strip() for p in first.split(',') if p.strip()]
+    return parts[0] if len(parts) >= 2 else ''
+
+
+def is_yc_india(c):
+    """Operating YC company whose first listed location is in India. `regions` alone also tags US companies with an Indian office."""
+    first = clean((c.get('all_locations') or '').split(';')[0])
+    return ('India' in (c.get('regions') or []) and c.get('status') in ('Active', 'Public')
+            and bool(re.search(r'(^|,\s*)India$', first)))
+
+
+def yc_people(founders):
+    """YC founders -> catalog people: name, role and a personal LinkedIn /in/ link only. Nothing else is copied (no email)."""
+    out, seen = [], set()
+    for f in founders or []:
+        name = clean(f.get('name'))
+        if not name or '@' in name or f.get('active') is False or name.lower() in seen: continue   # former founders are not listed
+        seen.add(name.lower())
+        parts = name.split()
+        role = clean(f.get('title')) or 'Founder'
+        li = clean(f.get('linkedin_url'))
+        if li and not re.match(r'https?://', li, re.I): li = 'https://' + li.lstrip('/')
+        li = li if re.match(r'https?://([a-z0-9-]+\.)*linkedin\.com/in/[^/?#\s]+', li, re.I) else ''
+        out.append({'first_name': parts[0], 'last_name': ' '.join(parts[1:]), 'role': role[:160], 'role_category': classify(role),
+                    'linkedin_url': li})
+    return out[:12]
+
+
+def yc_batch(batch):
+    """'Winter 2015' -> ('YC W15', 2015); anything else -> ('Y Combinator', year or None)."""
+    m = re.fullmatch(r'(Winter|Summer|Fall|Spring)\s+((?:19|20)\d\d)', clean(batch), re.I)
+    if m: return f'YC {YC_SEASON[m.group(1).lower()]}{m.group(2)[2:]}', int(m.group(2))
+    y = re.search(r'\b((?:19|20)\d\d)\b', clean(batch))
+    return 'Y Combinator', int(y.group(1)) if y else None
+
+
+def yc_candidate(c, d):
+    """One yc-india candidate from the index record `c` and the cached company page `d`."""
+    logo = c.get('small_logo_thumb_url') or ''
+    li = clean(d.get('linkedin_url'))
+    if li and not re.match(r'https?://', li, re.I): li = 'https://' + li.lstrip('/')
+    label, year = yc_batch(c.get('batch'))
+    url = c.get('url') or f"https://www.ycombinator.com/companies/{c.get('slug')}"
+    return {'source': 'yc-india', 'name': clean(c.get('name')), 'website': norm_url(c.get('website')),
+            'description': clean(c.get('one_liner')), 'sector': clean((c.get('subindustry') or '').split(' -> ')[-1]) or clean(c.get('industry')),
+            'industry': industry_for(c.get('industry'), c.get('subindustry')),
+            'location': yc_city(c.get('all_locations')) or clean(d.get('city')), 'country': 'IN', 'active': True,
+            'source_url': url, 'badge': label, 'badge_source': 'yc', 'year': year, 'people': yc_people(d.get('founders')),
+            'linkedin_url': li if '/company/' in li else '', 'logo_url': norm_url(logo) if 'missing' not in logo else '',
+            'careers_url': url + '/jobs' if c.get('isHiring') or d.get('jobs') else ''}
+
+
+def yc_all(refresh):
+    path = os.path.join(CACHE, 'yc_all.json')
+    fresh = os.path.exists(path) and time.time() - os.path.getmtime(path) < YC_INDEX_MAX_AGE
+    data = load(path) if fresh and not refresh else None
+    if not data:
+        try:
+            _, text = scrape.fetch(scrape.YC_INDEX, timeout=90, limit=50_000_000)
+            data = json.loads(text); save(path, data)
+        except Exception as e:     # keep working from the older copy
+            print(f'[collect] yc-india: index download failed ({type(e).__name__}), using the cached copy', flush=True)
+            data = load(path) or []
+    return data
+
+
+def collect_yc_india(refresh):
+    out, fetched, waiting = [], 0, 0
+    for c in yc_all(refresh):
+        if not is_yc_india(c) or not c.get('slug'): continue
+        path = os.path.join(CACHE, 'yc', c['slug'] + '.json')
+        if not os.path.exists(path):
+            if fetched >= YC_PAGES_PER_RUN: waiting += 1; continue    # next night carries on from here
+            fetched += 1
+            scrape.yc_company(c)                                        # caches the page facts and pauses between requests
+        d = load(path) or {}
+        if not d or d.get('missing'): continue
+        if d.get('country') and d['country'] not in ('IN', 'India'): continue   # the company page places it elsewhere
+        out.append(yc_candidate(c, d))
+    print(f'[collect] yc-india: {fetched} YC pages fetched, {waiting} left for the next run', flush=True)
+    return out
+
+
 def collect_antler(refresh):
     base = SOURCES['antler']['page']
     out, url, page = [], base, 1
@@ -227,7 +335,7 @@ def collect_antler(refresh):
             y = int(year) if re.fullmatch(r'(19|20)\d\d', year) else None
             out.append({'source': 'antler', 'name': name, 'website': norm_url(html.unescape(href.group(1))) if href else '',
                         'description': field('description'), 'sector': sector, 'industry': industry_for(sector),
-                        'location': '', 'country': 'US' if loc.upper() in ('US', 'USA', 'UNITED STATES') else ('other' if loc else ''),
+                        'location': '', 'country': antler_country(loc),
                         'active': True, 'source_url': base, 'badge': f'Antler {y}' if y else 'Antler portfolio', 'year': y,
                         'people': [], 'linkedin_url': '', 'raw_location': loc})
         nxt = re.search(r'<a href="(\?[0-9a-f]+_page=\d+)"[^>]*class="w-pagination-next', text)
@@ -364,7 +472,7 @@ def collect_hn(refresh):
 
 
 COLLECTORS = {'500-global': collect_500, 'antler': collect_antler, 'a16z': collect_a16z, 'sequoia': collect_sequoia, 'accel': collect_accel,
-              'hacker-news': collect_hn}
+              'hacker-news': collect_hn, 'yc-india': collect_yc_india}
 
 
 def collect(only, refresh=False):
@@ -703,7 +811,7 @@ def to_enrich(allc, only, domains):
             d = domain_of(c.get('website'))
             if not d or c.get('badge_only') or not c.get('active') or c.get('country') == 'other' or d in domains or PLATFORM.search(d): continue
             key = site_key(c['website'])
-            need_us = c.get('country') != 'US'
+            need_us = c.get('country') not in ('US', 'IN')     # the source already states the country
             if key not in jobs or (need_us and not jobs[key][2]): jobs[key] = (key, c['website'], need_us)
     return list(jobs.values())
 
@@ -716,14 +824,15 @@ def enrich(allc, only, limit=None):
 
 
 # ---------------------------------------------------------------- stage 3: build
-SOURCE_ORDER = ['a16z', 'sequoia', 'accel', '500-global', 'antler', 'hacker-news']   # which listing names the row when several list it
+SOURCE_ORDER = ['yc-india', 'a16z', 'sequoia', 'accel', '500-global', 'antler', 'hacker-news']   # which listing names the row when several list it
+COUNTRY_NAME = {'US': 'United States', 'IN': 'India'}     # the row's `country`, read by ingest_catalog (migration 202611260001)
 
 
 def build(allc, only):
     domains, slugs = catalog()
     taken = set(slugs)
     rows, by_domain, badge_adds = [], {}, {}
-    stats = {}
+    stats, row_src = {}, {}
     S = lambda slug: stats.setdefault(slug, {'listed': 0, 'no_website': 0, 'not_us': 0, 'not_operating': 0, 'us_and_active': 0, 'in_catalog': 0,
                                              'location_unknown': 0, 'site_down': 0, 'site_parked': 0, 'site_not_the_company': 0, 'no_description': 0,
                                              'duplicate_of_other_source': 0, 'new': 0})
@@ -733,7 +842,7 @@ def build(allc, only):
         meta = SOURCES[slug]
         for c in allc[slug]:
             st = S(slug); st['listed'] += 1
-            badge = {'label': c['badge'], 'source': slug}
+            badge = {'label': c['badge'], 'source': c.get('badge_source') or slug}
             d = domain_of(c.get('website'))
             if c.get('badge_only'):
                 # Launch HN: only ever a badge on a company that is already listed.
@@ -757,7 +866,9 @@ def build(allc, only):
             key = site_key(c['website'])
             f = load(os.path.join(FACTS, key + '.json'))
             if f is None: st['site_down'] += 1; continue   # not visited yet (run the enrich stage)
-            if c.get('country') != 'US':
+            if c.get('country') == 'IN':
+                pass                                       # the source states India: no US check; the site gates below still apply
+            elif c.get('country') != 'US':
                 if f.get('us') is False: st['not_us'] += 1; continue
                 if f.get('us') is True and AGENT.match(f.get('city') or '') and 'US address' in f.get('why', ''):
                     st['location_unknown'] += 1; continue      # only a registered-agent / virtual-mailbox address
@@ -804,20 +915,24 @@ def build(allc, only):
             people = []
             for p in c.get('people') or []:
                 pl = p.get('linkedin_url') or ''
-                people.append({**p, 'linkedin_url': pl if re.match(r'https?://([a-z0-9-]+\.)*linkedin\.com/in/[^/?#]+', pl, re.I) else ''})
+                people.append({**{k: v for k, v in p.items() if k != 'email'},   # people never carry an email
+                               'linkedin_url': pl if re.match(r'https?://([a-z0-9-]+\.)*linkedin\.com/in/[^/?#]+', pl, re.I) else ''})
             notes = [meta['name'] + (f" {c['year']}" if c.get('year') else ''), c['source_url']]
-            if c.get('country') != 'US': notes.append('US check: ' + f.get('why', ''))
+            if c.get('country') not in ('US', 'IN'): notes.append('US check: ' + f.get('why', ''))
             row = {'slug': cand, 'domain': d, 'name': site_casing(c['name'], f)[:200], 'website': norm_url(c['website']),
                    'description': desc[:600], 'location': canon_location(f.get('city') or ''), 'sector': c.get('sector') or '', 'industry': c.get('industry') or '',
-                   'logo_url': dp.get('logo_url') or '', 'careers_url': careers, 'contact_url': strict_contact(s.get('contact_url')) or strict_contact(dp.get('contact_url')),
+                   'logo_url': c.get('logo_url') or dp.get('logo_url') or '', 'careers_url': careers or c.get('careers_url') or '',
+                   'contact_url': strict_contact(s.get('contact_url')) or strict_contact(dp.get('contact_url')),
                    'linkedin_url': li.split('?')[0], 'contact_email': general, 'hiring_email': hiring,
                    'source': meta['name'], 'source_url': c['source_url'], 'badges': [badge], 'batch_year': c.get('year'),
-                   'notes': ' · '.join(x for x in notes if x), 'people': people}
+                   'notes': ' · '.join(x for x in notes if x), 'people': people,
+                   'country': COUNTRY_NAME['IN' if c.get('country') == 'IN' else 'US']}
             by_domain[d] = row
+            row_src[id(row)] = slug
             rows.append(row)
             st['new'] += 1
     for slug in stats:
-        mine = [r for r in rows if r['badges'][0]['source'] == slug]
+        mine = [r for r in rows if row_src.get(id(r)) == slug]
         cov = lambda k: sum(1 for r in mine if r.get(k))
         stats[slug]['coverage_of_new'] = {'description': cov('description'), 'city': cov('location'), 'leaders': cov('people'), 'careers': cov('careers_url'),
                                          'contact': cov('contact_url'), 'email': sum(1 for r in mine if r['contact_email'] or r['hiring_email']),
