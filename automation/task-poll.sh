@@ -51,6 +51,20 @@ next_task() {
         | sort_by(.createdAt) | .[].number'
 }
 
+# The team room shows what is waiting. Reported only when the list changes.
+FR_APP_ENV_FILE="${APP_ENV_FILE:-${APP_DIR:-/home/opc/apps/foundreach}/.env}"
+# shellcheck source=/dev/null
+if [ -f "$REPO/automation/emit.sh" ]; then . "$REPO/automation/emit.sh"; else fr_emit() { return 0; }; fi
+report_queue() {
+  local list now last="$BASE/queue-last.json"
+  list="$(gh issue list --repo "$SLUG" --state open --label agent-task --limit 100 --json number,title,createdAt,author,labels 2>/dev/null \
+    | jq -c --arg owner "$OWNER" '[ .[] | select(.author.login == $owner) | {number, title: .title[0:120], opened: .createdAt, state: ([.labels[].name | select(startswith("agent-") and . != "agent-task")] | first // "waiting")} ] | sort_by(.opened)' 2>/dev/null)"
+  [ -n "$list" ] || return 0
+  [ "$list" = "$(cat "$last" 2>/dev/null)" ] && return 0
+  printf '%s' "$list" > "$last"
+  fr_emit queue task "" "" queue tasks "$(printf '%s' "$list" | jq -r '[.[] | select(.state == "waiting" or .state == "agent-running")] | length') open" "$(jq -cn --argjson t "$list" '{tasks: $t}')"
+}
+
 if [ "$LIST_ONLY" = 1 ]; then
   n="$(next_task | tr '\n' ' ')"; say "waiting tasks of $OWNER in $SLUG, oldest first: ${n:-none}"; exit 0
 fi
@@ -80,6 +94,7 @@ if [ -f "$MARK" ]; then
   fi
 fi
 
+report_queue
 count=0; labels_ready=0
 while [ "$count" -lt "$MAX_PER_CALL" ]; do
   n="$(next_task | head -n 1 | tr -cd '0-9')"
@@ -99,6 +114,7 @@ while [ "$count" -lt "$MAX_PER_CALL" ]; do
     [ -n "$waiting" ] && echo && echo "Waiting behind it, in order: $(printf '%s' "$waiting" | sed 's/\([0-9][0-9]*\)/#\1/g')"
   } > "$tmp/c.md"
   label "$n" --add-label agent-running; comment "$n" "$tmp/c.md"
+  sleep 5; report_queue
   say "#$n: starting"
 
   echo "$n" > "$MARK"
@@ -124,6 +140,7 @@ while [ "$count" -lt "$MAX_PER_CALL" ]; do
   rm -f "$MARK"
   say "#$n: $outcome"
   sleep 20   # the issue list lags a little behind a label change
+  report_queue
   count=$((count + 1))
 done
 [ "$count" = 0 ] && say "no task is waiting"

@@ -23,6 +23,9 @@ main() {
   REPO="$(cd "$SCRIPT_DIR/.." && pwd -P)"
   BASE="$(dirname "$REPO")"
   load_env
+  APP_DIR="${APP_DIR:-/home/opc/apps/foundreach}"; FR_APP_ENV_FILE="${APP_ENV_FILE:-$APP_DIR/.env}"
+  # shellcheck source=/dev/null
+  if [ -f "$REPO/automation/emit.sh" ]; then . "$REPO/automation/emit.sh"; else fr_emit() { return 0; }; fi
   wait_turn
   DATE="$(date -u +%Y-%m-%d)"
   STARTED="$(date +%s)"
@@ -72,6 +75,7 @@ main() {
   if [ -n "$ONLY_STAGE" ]; then run_single_stage; return $?; fi
 
   : > "$STATUS_FILE"; : > "$REQ_FILE"
+  emit run running "$([ -n "$TASK_ID" ] && echo "Founder task #$TASK_ID started" || echo "Nightly run started")" "$([ -n "$TASK_ID" ] && jq -cn --arg t "$(head -c 600 "$TASK_FILE" 2>/dev/null)" '{text: $t}')"
   [ "$DRY_RUN" = 1 ] || update_trusted_clone "$@"
   PREV_REL="$(site_version)"; NEW_REL=""; MERGED=0
   check_ai_ready
@@ -114,6 +118,7 @@ main() {
   remember
   prune_old
   log "done in $(( ($(date +%s) - STARTED) / 60 )) min. Report: $OUT_DIR/report.html"
+  emit run "$([ "${AI_OK:-0}" = 1 ] && echo done || echo failed)" "Finished in $(( ($(date +%s) - STARTED) / 60 )) minutes${AI_WHY:+: $AI_WHY}"
   return 0
 }
 
@@ -159,7 +164,17 @@ load_env() {
 
 log() { local line; line="$(date -u +%H:%M:%S) $*"; echo "$line"; echo "$line" >> "$RUN_LOG"; }
 
-set_status() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$STATUS_FILE"; log "[$1] $2 (${3}s) $4"; }
+set_status() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$STATUS_FILE"; log "[$1] $2 (${3}s) $4"; emit "$1" "$2" "$4" "${EMIT_META:-}"; EMIT_META=""; }
+# emit STAGE STATUS NOTE [META]   one line for the team room (see emit.sh); silent in a dry run
+emit() {
+  [ "$DRY_RUN" = 1 ] && return 0
+  fr_emit "$RUN_NAME" "$([ -n "$TASK_ID" ] && echo task || echo nightly)" "$TASK_ID" "${TITLE:-}" "$1" "$2" "$3" "${4:-}"
+}
+# excerpt FILE HEADING [CHARS]   the text under one "## heading" of a hand-over file, as one line
+excerpt() {
+  [ -f "$1" ] || return 0
+  awk -v h="## $2" 'tolower($0) ~ "^" tolower(h) {on=1; next} /^## / {on=0} on' "$1" | LC_ALL=C tr -d '\000-\010\013-\037' | head -c "${3:-700}"
+}
 status_of() { awk -F '\t' -v s="$1" '$1==s{r=$2} END{print r}' "$STATUS_FILE" 2>/dev/null; }
 
 cleanup() {
@@ -181,6 +196,7 @@ wait_turn() {
   exec 8> "$BASE/queue.lock" || return 0
   if ! flock -n 8; then
     echo "$(date -u +%H:%M:%S) another FoundReach job is running; waiting for it to finish"
+    fr_emit queue "$([ -n "$TASK_ID" ] && echo task || echo nightly)" "$TASK_ID" "" queue waiting "$([ -n "$TASK_ID" ] && echo "Task #$TASK_ID" || echo "The nightly agent run") is waiting for the running job to finish"
     flock 8
     echo "$(date -u +%H:%M:%S) the other job is done; starting"
   fi
@@ -660,6 +676,7 @@ run_stage() {
   [ -n "$MODEL" ] && cmd+=(--model "$MODEL")
 
   log "[$stage] starting: $S_TURNS turns, $((secs / 60)) min, tools $S_TOOLS"
+  emit "$stage" running "started, up to $((secs / 60)) minutes"
   login_in
   sandbox_exec "$secs" 1 "$prompt" "$result" "$OUT_DIR/$stage.stderr.log" "${cmd[@]}"; rc=$?
   login_out
@@ -679,6 +696,20 @@ run_stage() {
     if [ "$SB_TIMED_OUT" = 1 ]; then status=timeout; note="$note; hit the time limit, no $S_OUTPUT"
     else status=failed; note="$note; no $S_OUTPUT was written. $(head -c 200 "$OUT_DIR/$stage.stderr.log" 2>/dev/null | tr '\n\t' '  ')"; fi
   fi
+  # For the team room: what the step cost, and the part of its output a person wants to see.
+  local text=""
+  case "$stage" in
+    research) text="$(excerpt "$WORK/research.md" Shortlist)" ;;
+    plan)     text="$(excerpt "$WORK/plan.md" Decisions)"; [ -n "$text" ] || text="$(excerpt "$WORK/plan.md" Scope)" ;;
+    design)   text="$(head -c 500 "$WORK/design.md" 2>/dev/null)" ;;
+    build)    text="$(excerpt "$WORK/build.md" Built)" ;;
+    review)   text="$(excerpt "$WORK/review.md" Summary)" ;;
+    retro)    text="$(excerpt "$WORK/retro.md" "Changed today")" ;;
+  esac
+  work_dir_ok || text=""
+  EMIT_META="$(jq -c --arg text "$text" --argjson secs "$took" '{seconds: $secs, turns: (.num_turns // null), cost_usd: (.total_cost_usd // null),
+      tokens: ((.usage.input_tokens // 0) + (.usage.output_tokens // 0) + (.usage.cache_read_input_tokens // 0) + (.usage.cache_creation_input_tokens // 0)), text: $text}' "$result" 2>/dev/null \
+    || jq -cn --arg text "$text" --argjson secs "$took" '{seconds: $secs, text: $text}')"
   set_status "$stage" "$status" "$took" "$note"
   [ "$status" = ok ] || [ "$status" = partial ]
 }
@@ -1007,6 +1038,9 @@ site_facts() {
     [ -n "${PR_URL:-}" ] && echo "- Pull request: $PR_URL ($([ "${MERGED:-0}" = 1 ] && echo merged || echo "not merged"))"
   } > "$OUT_DIR/release.md"
   put_work release.md < "$OUT_DIR/release.md"
+  emit release "$([ "${MERGED:-0}" = 1 ] && echo merged || { [ -n "${PR_URL:-}" ] && echo held || echo none; })" "$(tail -n 1 "${PUB_FILE:-/dev/null}" 2>/dev/null | cut -c3-400)" \
+    "$(jq -cn --arg pr "${PR_URL:-}" --arg verdict "${VERDICT:-NONE}" --arg prev "$prev_u" --arg new "$new_u" --arg prevc "${prev_c:0:7}" --arg newc "${NEW_REL:0:7}" --arg asks "$(head -c 900 "$REQ_FILE" 2>/dev/null)" \
+        '{pr: $pr, verdict: $verdict, previous: $prev, previous_commit: $prevc, new: $new, new_commit: $newc, asks: $asks}')"
   if [ -s "$REQ_FILE" ]; then put_work asks.md < "$REQ_FILE"; else echo "Nothing is needed from the founder today." | put_work asks.md; fi
   [ -f "$REPO/automation/work/collect-last.json" ] && put_work collect-last.json < "$REPO/automation/work/collect-last.json"
   stats="$(curl -fsS -m 20 "$SITE_URL/api/public/stats" 2>/dev/null | head -c 30000)"

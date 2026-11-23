@@ -62,12 +62,19 @@ with_timeout() {
   fi
 }
 
+# ---- the team room (see emit.sh)
+FR_APP_ENV_FILE="$APP_ENV_FILE"
+# shellcheck source=/dev/null
+if [ -f "$REPO/automation/emit.sh" ]; then . "$REPO/automation/emit.sh"; else fr_emit() { return 0; }; fi
+cemit() { [ "$DRY_RUN" = 1 ] || fr_emit "collect-$DATE" collect "" "Company collection" collect "$1" "$2" "${3:-}"; }
+
 # ---- one FoundReach job at a time: shared with the agent runs (see wait_turn in run-daily.sh).
 # A collection that starts while agents are working waits for them, and the other way round.
 if [ "$DRY_RUN" != 1 ] && command -v flock >/dev/null 2>&1 && exec 8> "$(dirname "$REPO")/queue.lock"; then
-  if ! flock -n 8; then log "another FoundReach job is running; waiting for it to finish"; flock 8; log "the other job is done; starting"; fi
+  if ! flock -n 8; then log "another FoundReach job is running; waiting for it to finish"; [ "$DRY_RUN" = 1 ] || fr_emit queue collect "" "" queue waiting "The company collection is waiting for the running job to finish"; flock 8; log "the other job is done; starting"; fi
 fi
 STARTED="$(date +%s)"; DEADLINE=$((STARTED + MAX_MINUTES * 60))   # the time limit starts after the wait
+cemit running "Collecting from the sources, up to $MAX_MINUTES minutes"
 
 # ---- one run at a time
 LOCK="$WORK/.collect.lock"
@@ -200,6 +207,9 @@ if command -v jq >/dev/null 2>&1; then
        file_summary: $file, text: $text}' > "$WORK/collect-last.json.tmp" && mv "$WORK/collect-last.json.tmp" "$WORK/collect-last.json"
 fi
 cat "$TEXT"
+cemit "$OVERALL" "$(grep -m1 'new companies' "$INGEST_OUT" 2>/dev/null | sed 's/^ *//' | cut -c1-300)${SCRAPE_NOTE:+ Scrape: $SCRAPE_NOTE.}${INGEST_NOTE:+ Load: $INGEST_NOTE.}" \
+  "$(jq -c '{seconds: .seconds, excluded: .excluded_sources, new_in_file: (.file_summary.new_companies // null),
+            sources: ((.file_summary.per_source // {}) | with_entries(.value |= {listed: (.listed // null), new: (.new // null)}))}' "$WORK/collect-last.json" 2>/dev/null)"
 
 # Keep a month of logs.
 ls -1 "$LOG_DIR"/*.log 2>/dev/null | sort -r | tail -n +31 | while IFS= read -r f; do rm -f "$f" "${f%.log}.ingest.txt"; done
