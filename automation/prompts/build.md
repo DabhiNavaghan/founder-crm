@@ -55,7 +55,7 @@ own the result and you check their work.
 ## Tools and limits
 
 You have Read, Edit, Write, Glob, Grep, subagents, and a shell limited to exactly these commands:
-`npm run build`, `npm test`, `node --check <file>`, `node --test [files]`, `git status`, `git diff`,
+`npm run build`, `npm test`, `node --check <file>`, `node --test [files]`, `python3 -m py_compile <file>`, `python3 -m unittest discover -s tests` (Python tests live in `tests/test_*.py`), `git status`, `git diff`,
 `git add`, `git commit`, `git log`, `git restore`. One command per call: chains with `&&`, `;` or
 pipes are refused. Anything else is refused, and a refusal is final: do not look for another way to
 run it. There is no web access in this stage, no `git push`, no package installs.

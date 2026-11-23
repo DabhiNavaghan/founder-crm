@@ -73,5 +73,5 @@ Also add `## Technical notes`: up to three things you would fix or watch in the 
 ## Tools and limits
 
 You have Read, Glob, Grep, Write (only inside `{{WORK}}/`), and a shell limited to exactly:
-`npm run build`, `npm test`, `node --check <file>`, `node --test [files]`, `git status`, `git diff`,
+`npm run build`, `npm test`, `node --check <file>`, `node --test [files]`, `python3 -m py_compile <file>`, `python3 -m unittest discover -s tests` (Python tests live in `tests/test_*.py`), `git status`, `git diff`,
 `git log`, `git show`. One command per call. You may not edit, add, commit or restore anything.

@@ -68,12 +68,17 @@ ensure_labels() {
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp" "${FOUNDREACH_POLL_COPY:-}"' EXIT
 
-# An issue still marked running when a new poller starts was cut off (a restart, a crash).
-for n in $(gh issue list --repo "$SLUG" --state open --label agent-running --limit 50 --json number,author --jq ".[] | select(.author.login == \"$OWNER\") | .number" 2>/dev/null); do
-  echo "The run for this task was interrupted before it finished. Remove the \`agent-failed\` label to queue it again." > "$tmp/c.md"
-  comment "$n" "$tmp/c.md"; label "$n" --remove-label agent-running --add-label agent-failed
-  say "#$n was marked running with no run behind it; marked failed"
-done
+# A marker names the task in progress. If one is left over when a poller starts, that run was cut
+# off (a restart, a crash): the issue is marked failed, provided it really still says running.
+MARK="$BASE/task-in-progress"
+if [ -f "$MARK" ]; then
+  n="$(tr -cd '0-9' < "$MARK" | cut -c1-9)"; rm -f "$MARK"
+  if [ -n "$n" ] && gh api "repos/$SLUG/issues/$n" --jq '[.labels[].name] | index("agent-running") != null' 2>/dev/null | grep -qx true; then
+    echo "The run for this task was interrupted before it finished. Remove the \`agent-failed\` label to queue it again." > "$tmp/c.md"
+    comment "$n" "$tmp/c.md"; label "$n" --remove-label agent-running --add-label agent-failed
+    say "#$n was cut off; marked failed"
+  fi
+fi
 
 count=0; labels_ready=0
 while [ "$count" -lt "$MAX_PER_CALL" ]; do
@@ -96,6 +101,7 @@ while [ "$count" -lt "$MAX_PER_CALL" ]; do
   label "$n" --add-label agent-running; comment "$n" "$tmp/c.md"
   say "#$n: starting"
 
+  echo "$n" > "$MARK"
   bash "$REPO/automation/run-daily.sh" --task-file "$tmp/task.md" --task-id "$n"; rc=$?
 
   dir="$(ls -1dt "$REPO"/automation/work/task-"$n"-20* 2>/dev/null | head -n 1)"
@@ -115,7 +121,9 @@ while [ "$count" -lt "$MAX_PER_CALL" ]; do
     *)       echo >> "$tmp/c.md"; echo "Failed. Remove the \`agent-failed\` label to queue it again." >> "$tmp/c.md"
              comment "$n" "$tmp/c.md"; label "$n" --remove-label agent-running --add-label agent-failed ;;
   esac
+  rm -f "$MARK"
   say "#$n: $outcome"
+  sleep 20   # the issue list lags a little behind a label change
   count=$((count + 1))
 done
 [ "$count" = 0 ] && say "no task is waiting"

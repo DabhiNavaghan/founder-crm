@@ -483,6 +483,7 @@ prepare_workspace() {
   fi
   git -C "$WS" checkout --quiet -b "$BRANCH" >> "$RUN_LOG" 2>&1
   BASE_SHA="$(git -C "$WS" rev-parse main)"; MAIN_SHORT="$(git -C "$WS" rev-parse --short main)"
+  carry_over
   mkdir -p "$WORK" "$WS/automation/work/memory"
   cp -f "$MEMORY"/*.md "$WS/automation/work/memory/" 2>/dev/null
   if [ -d "$MEMORY/skills" ]; then mkdir -p "$WS/automation/work/memory/skills"; cp -f "$MEMORY"/skills/*.md "$WS/automation/work/memory/skills/" 2>/dev/null; fi
@@ -511,6 +512,26 @@ open_prs() {
 }
 repo_slug() { git -C "$REPO" remote get-url origin 2>/dev/null | sed -e 's#^git@github.com:##' -e 's#^https://github.com/##' -e 's#\.git$##'; }
 
+# Work the CTO failed is not thrown away: the next run starts on top of that branch and fixes it.
+# carry.txt holds "branch pull-request-url", written by publish when a change was pushed but failed.
+carry_over() {
+  CARRIED=""; CARRIED_PR=""
+  local file="$MEMORY/carry.txt" b pr state
+  [ "$DRY_RUN" != 1 ] && [ -f "$file" ] || return 0
+  read -r b pr < "$file"
+  case "$b" in daily/20*|task/[0-9]*) ;; *) rm -f "$file"; return 0 ;; esac
+  state="$(with_timeout 60 gh pr view "$pr" --repo "$(repo_slug)" --json state --jq .state 2>/dev/null)"
+  if [ "$state" != OPEN ]; then rm -f "$file"; return 0; fi
+  if with_timeout 120 git -C "$REPO" fetch --quiet --no-tags origin "+refs/heads/$b:refs/remotes/origin/$b" >> "$RUN_LOG" 2>&1 \
+     && git -C "$WS" fetch --quiet --no-tags origin "refs/remotes/origin/$b" >> "$RUN_LOG" 2>&1 \
+     && git -C "$WS" -c user.name="$GIT_NAME" -c user.email="$GIT_EMAIL" merge --quiet --no-edit -m "Continue $b" FETCH_HEAD >> "$RUN_LOG" 2>&1; then
+    CARRIED="$b"; CARRIED_PR="$pr"; log "continuing the unfinished work of $b ($pr)"
+  else
+    git -C "$WS" merge --abort >> "$RUN_LOG" 2>&1
+    log "the unfinished work of $b does not merge onto main any more; starting fresh"; rm -f "$file"
+  fi
+}
+
 # context.md is the orchestrator's own account of the run. It is rewritten before every stage.
 write_context() {
   [ -n "${OPEN_PRS:-}" ] || OPEN_PRS="$(open_prs)"
@@ -522,6 +543,7 @@ write_context() {
     echo "- Branch: $BRANCH, created from main at ${MAIN_SHORT:-?}"
     echo "- Work folder: $WORK_REL/"
     echo "- Build on main before today's work: ${BASELINE:-unknown}"
+    [ -n "${CARRIED:-}" ] && echo "- **Today's branch already contains the unfinished work of $CARRIED ($CARRIED_PR), which the CTO failed.** It is not live. The first job today is to fix the problems the CTO listed in automation/work/memory/last-review.md, on top of that code: do not rewrite it from scratch. The branch is released as one change when the CTO passes it."
     if [ -n "$TASK_ID" ]; then
       echo "- **This run is a founder task (#$TASK_ID), not the nightly run.** The founder wrote $WORK_REL/task.md himself. It is his instruction and it sets the goal of this run. The guardrails still apply to it."
     fi
@@ -568,7 +590,7 @@ stage_config() {
       S_TURNS=150; S_MINUTES=50; S_OUTPUT=build.md
       S_TOOLS="Read,Edit,Write,Glob,Grep,Bash,Agent"
       S_ALLOW=(Read Glob Grep Agent "Edit(/$WS/**)"
-        "Bash(npm run build)" "Bash(npm test)" "Bash(node --check *)" "Bash(node --test)" "Bash(node --test *)" "Bash(python3 -m py_compile *)"
+        "Bash(npm run build)" "Bash(npm test)" "Bash(node --check *)" "Bash(node --test)" "Bash(node --test *)" "Bash(python3 -m py_compile *)" "Bash(python3 -m unittest discover -s tests -p test_*.py)" "Bash(python3 -m unittest discover -s tests)"
         "Bash(git status)" "Bash(git status *)" "Bash(git diff)" "Bash(git diff *)" "Bash(git add *)"
         "Bash(git commit *)" "Bash(git log)" "Bash(git log *)" "Bash(git restore *)")
       S_DENY=(WebFetch WebSearch NotebookEdit "${shell_deny[@]}"
@@ -580,7 +602,7 @@ stage_config() {
     review)
       S_TURNS=60; S_MINUTES=20; S_OUTPUT=review.md
       S_TOOLS="Read,Glob,Grep,Write,Bash"
-      S_ALLOW+=("Bash(npm run build)" "Bash(npm test)" "Bash(node --check *)" "Bash(node --test)" "Bash(node --test *)" "Bash(python3 -m py_compile *)"
+      S_ALLOW+=("Bash(npm run build)" "Bash(npm test)" "Bash(node --check *)" "Bash(node --test)" "Bash(node --test *)" "Bash(python3 -m py_compile *)" "Bash(python3 -m unittest discover -s tests -p test_*.py)" "Bash(python3 -m unittest discover -s tests)"
         "Bash(git status)" "Bash(git status *)" "Bash(git diff)" "Bash(git diff *)" "Bash(git log)" "Bash(git log *)" "Bash(git show *)")
       S_DENY=(WebFetch WebSearch Agent NotebookEdit "${shell_deny[@]}"
         "Bash(git add *)" "Bash(git commit *)" "Bash(git restore *)" "Bash(git checkout *)" "Bash(git reset *)") ;;
@@ -704,15 +726,20 @@ after_build() {
   if grep -q '"test"[[:space:]]*:' "$WS/package.json" 2>/dev/null; then
     ws_logged 600 "$OUT_DIR/build-check.log" npm test; rc_test=$?
   fi
+  local rc_py=skipped
+  if ls "$WS"/tests/test_*.py >/dev/null 2>&1; then
+    ws_logged 600 "$OUT_DIR/build-check.log" python3 -m unittest discover -s tests -p 'test_*.py'; rc_py=$?
+  fi
   ws 60 git checkout --quiet -- . > /dev/null; ws 60 git clean -fdq > /dev/null
-  BUILD_OK=0; [ "$rc_build" = 0 ] && { [ "$rc_test" = 0 ] || [ "$rc_test" = skipped ]; } && BUILD_OK=1
+  BUILD_OK=0; [ "$rc_build" = 0 ] && { [ "$rc_test" = 0 ] || [ "$rc_test" = skipped ]; } && { [ "$rc_py" = 0 ] || [ "$rc_py" = skipped ]; } && BUILD_OK=1
   {
     echo "- npm run build: $([ "$rc_build" = 0 ] && echo passed || echo "FAILED (status $rc_build)")"
     echo "- npm test: $([ "$rc_test" = 0 ] && echo passed || { [ "$rc_test" = skipped ] && echo "no test script" || echo "FAILED (status $rc_test)"; })"
+    echo "- python3 -m unittest (tests/test_*.py): $([ "$rc_py" = 0 ] && echo passed || { [ "$rc_py" = skipped ] && echo "no Python tests" || echo "FAILED (status $rc_py)"; })"
     echo; echo "Last lines of output:"; echo; echo '```'; tail -n 40 "$OUT_DIR/build-check.log" 2>/dev/null | cut -c1-300; echo '```'
   } >> "$f"
   put_work build-check.md < "$f"
-  set_status build-check "$([ "$BUILD_OK" = 1 ] && echo ok || echo failed)" 0 "commits $COMMITS, build $rc_build, tests $rc_test"
+  set_status build-check "$([ "$BUILD_OK" = 1 ] && echo ok || echo failed)" 0 "commits $COMMITS, build $rc_build, tests $rc_test, python tests $rc_py"
 }
 
 after_review() {
@@ -861,6 +888,11 @@ publish() {
   fi
   if [ -z "$PR_URL" ]; then pub "The branch was pushed but the pull request could not be opened (see run.log)."; set_status publish failed $(( $(date +%s) - t0 )) "gh pr create failed"; return 1; fi
   pub "Pull request: $PR_URL ($([ -n "$draft" ] && echo draft || echo "ready for review"), labels: $labels)"
+  if [ -n "${CARRIED_PR:-}" ] && [ "$CARRIED_PR" != "$PR_URL" ]; then
+    with_timeout 120 gh pr close "$CARRIED_PR" --repo "$slug" --comment "Continued in $PR_URL, which contains this work plus the fixes the review asked for." >> "$RUN_LOG" 2>&1 && pub "Closed $CARRIED_PR: its work continues in this pull request."
+  fi
+  # A change the CTO failed is carried into the next run; anything else is not.
+  if [ "$VERDICT" = FAIL ] || [ "$BUILD_OK" != 1 ]; then printf '%s %s\n' "$BRANCH" "$PR_URL" > "$MEMORY/carry.txt"; else rm -f "$MEMORY/carry.txt"; fi
   note="PR $PR_URL"
 
   if [ "${AUTO_MERGE:-0}" != 1 ]; then pub "Auto-merge is off: the pull request waits to be merged by hand."
