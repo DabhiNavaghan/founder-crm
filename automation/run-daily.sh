@@ -31,6 +31,9 @@ main() {
   GIT_EMAIL="${GIT_IDENTITY_EMAIL:-$(git config --global user.email 2>/dev/null || true)}"
   GIT_EMAIL="${GIT_EMAIL:-DabhiNavaghan@users.noreply.github.com}"
   APP_DIR="${APP_DIR:-/home/opc/apps/foundreach}"
+  APP_ENV_FILE="${APP_ENV_FILE:-$APP_DIR/.env}"
+  SITE_URL="${SITE_URL:-https://foundreach.navaghandabhi.dev}"; SITE_URL="${SITE_URL%/}"
+  RUN_START="$(date -u +%H:%M)"
   TOKEN_ENV=""; CLEAN_DIRS=""
 
   if [ "$DRY_RUN" = 1 ]; then
@@ -51,6 +54,7 @@ main() {
   mkdir -p "$OUT_DIR" "$MEMORY" "$STATE/home" "$STATE/claude" || { echo "cannot create $OUT_DIR"; return 1; }
   RUN_LOG="$OUT_DIR/run.log"
   STATUS_FILE="$OUT_DIR/status.tsv"
+  REQ_FILE="$OUT_DIR/asks.md"
   trap cleanup EXIT
 
   choose_sandbox
@@ -63,8 +67,9 @@ main() {
 
   if [ -n "$ONLY_STAGE" ]; then run_single_stage; return $?; fi
 
-  : > "$STATUS_FILE"
+  : > "$STATUS_FILE"; : > "$REQ_FILE"
   [ "$DRY_RUN" = 1 ] || update_trusted_clone "$@"
+  PREV_REL="$(site_version)"; NEW_REL=""; MERGED=0
   check_ai_ready
   if [ "$AI_OK" = 1 ]; then
     prepare_workspace || AI_OK=0
@@ -84,14 +89,17 @@ main() {
       COMMITS=0; CODE_FILES=0; VERDICT=NONE; BUILD_OK=0
     fi
     publish
+    site_facts
     write_context
     run_stage report
   else
     for s in research plan design build review publish report; do set_status "$s" skipped 0 "$AI_WHY"; done
+    ask "Get the agents running again on the server" "No agent could start today: $AI_WHY" "Sign in to the server, run automation/run-daily.sh --selftest, and sign in to Claude again if it says so."
   fi
   collect_work
   finish_report
   send_email
+  send_requests
   remember
   prune_old
   log "done in $(( ($(date +%s) - STARTED) / 60 )) min. Report: $OUT_DIR/report.html"
@@ -120,7 +128,7 @@ parse_args() {
 
 # Settings come from the environment (systemd's EnvironmentFile). For a run by hand they are read
 # from the .env next to the clone. Only known names are taken, and the file is never executed.
-ENV_KEYS="CLAUDE_CODE_OAUTH_TOKEN SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS SMTP_SECURITY REPORT_FROM REPORT_TO AUTO_MERGE AGENT_MODEL DAILY_MAX_MINUTES AGENT_SANDBOX AGENT_MEMORY_MAX UPDATE_CONTAINER GIT_IDENTITY_NAME GIT_IDENTITY_EMAIL APP_DIR"
+ENV_KEYS="CLAUDE_CODE_OAUTH_TOKEN SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS SMTP_SECURITY REPORT_FROM REPORT_TO AUTO_MERGE AGENT_MODEL DAILY_MAX_MINUTES AGENT_SANDBOX AGENT_MEMORY_MAX UPDATE_CONTAINER GIT_IDENTITY_NAME GIT_IDENTITY_EMAIL APP_DIR APP_ENV_FILE SITE_URL MIGRATE_SECRET"
 load_env() {
   local file="${AGENTS_ENV_FILE:-$BASE/.env}" line key value
   [ -f "$file" ] || return 0
@@ -477,6 +485,7 @@ write_context() {
     echo "# Run context (written by the orchestrator, not by a stage)"
     echo
     echo "- Date: $DATE (UTC)"
+    echo "- Run started: $RUN_START UTC. Time now: $(date -u +%H:%M) UTC."
     echo "- Branch: daily/$DATE, created from main at ${MAIN_SHORT:-?}"
     echo "- Work folder: $WORK_REL/"
     echo "- Build on main before today's work: ${BASELINE:-unknown}"
@@ -494,7 +503,7 @@ write_context() {
     echo
     echo "## Auto-merge"
     echo
-    if [ "${AUTO_MERGE:-0}" = 1 ]; then echo "On: a PASS without migration, pipeline or package changes is merged and deployed."; else echo "Off: every change waits as a pull request for the founder."; fi
+    if [ "${AUTO_MERGE:-0}" = 1 ]; then echo "On: the CTO's PASS merges and deploys the change. A new migration file is applied to the database first, unless the safety check holds it. Changes to pipeline, deployment or package files are never merged by the run."; else echo "Off: every change waits as a pull request."; fi
   } > "$OUT_DIR/context.md"
   put_work context.md < "$OUT_DIR/context.md"
 }
@@ -679,11 +688,67 @@ after_review() {
 # Publish (no AI). Runs in the trusted clone: the branch is fetched from the workspace as data,
 # checked, and only then pushed. Nothing here executes code from the workspace.
 # ------------------------------------------------------------------------------------------------
+# ask WHAT WHY HOW   something only the founder can provide; mailed by the CEO agent after the run
+ask() { printf '%s | %s | %s\n' "$1" "$2" "$3" | tr -d '\r' | tr '\n' ' ' | sed 's/ $//' >> "$REQ_FILE"; echo >> "$REQ_FILE"; }
+
+# One setting from the app's own .env. The file is not executed and the value is never printed.
+app_setting() {
+  [ -r "$APP_ENV_FILE" ] || return 0
+  grep -E "^$1=" "$APP_ENV_FILE" | tail -n 1 | cut -d= -f2- | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/" | tr -d '\r'
+}
+
+# "commit url" of the release that serves production right now; empty when it cannot be read.
+site_version() {
+  command -v jq >/dev/null 2>&1 || return 0
+  curl -fsS -m 15 "$SITE_URL/api/version" 2>/dev/null | jq -r 'select(.commit != null and .commit != "") | "\(.commit) \(.url // "")"' 2>/dev/null | head -n 1
+}
+
+# After a merge: waits until production serves the merge commit (Vercel deploys main on its own).
+wait_release() {
+  local want="$1" i now
+  for i in $(seq 1 40); do
+    now="$(site_version)"
+    if [ -n "$now" ] && [ "${now%% *}" = "$want" ]; then NEW_REL="$now"; log "[publish] production now serves ${want:0:7}"; return 0; fi
+    sleep 15
+  done
+  log "[publish] production did not report commit ${want:0:7} within 10 minutes"; return 1
+}
+
+# Applies the new migration files of a branch, oldest first. Sets MIG_NOTE when it stops.
+apply_migrations() {
+  local base="$1" sha="$2" f name out rc changed
+  MIG_NOTE=""
+  changed="$(git -C "$REPO" diff --name-only --diff-filter=MDRT "$base" "$sha" -- supabase/migrations/ | tr '\n' ' ')"
+  if [ -n "$changed" ]; then
+    MIG_NOTE="it changes or removes a migration that already exists (${changed% })"
+    ask "Review pull request $PR_URL by hand" "It edits an existing migration file, which the run never applies on its own." "Open the link; apply the change in the Supabase SQL editor if it is right, then merge."
+    return 1
+  fi
+  for f in $(git -C "$REPO" diff --name-only --diff-filter=A "$base" "$sha" -- supabase/migrations/ | sort); do
+    name="$(basename "$f")"
+    git -C "$REPO" show "$sha:$f" | VITE_SUPABASE_URL="$(app_setting VITE_SUPABASE_URL)" VITE_SUPABASE_PUBLISHABLE_KEY="$(app_setting VITE_SUPABASE_PUBLISHABLE_KEY)" MIGRATE_SECRET="${MIGRATE_SECRET:-}" \
+      with_timeout 200 python3 "$REPO/automation/apply_migration.py" "$name" > "$OUT_DIR/.migration.out" 2>&1; rc="${PIPESTATUS[1]}"
+    out="$(tail -n 1 "$OUT_DIR/.migration.out" | cut -c1-400)"; rm -f "$OUT_DIR/.migration.out"
+    log "[publish] migration $name: $out"
+    case "$rc" in
+      0) pub "Migration $name: $out." ;;
+      3) MIG_NOTE="the safety check held migration $name (${out#held: })"
+         ask "Apply migration $name by hand, then merge $PR_URL" "The safety check held it: ${out#held: }." "Open the file in the pull request, run it in the Supabase SQL editor, then merge the pull request."
+         return 1 ;;
+      2) MIG_NOTE="automatic migrations are not switched on, so $name waits to be applied by hand"
+         ask "Apply migration $name, then merge $PR_URL" "The CTO agent passed it, but automatic migrations are not switched on (${out#not configured: })." "Run the file in the Supabase SQL editor and merge the pull request. To switch this on for good, run supabase/migrations/202611250002_run_migration.sql once and add the secret's hash (see automation/README.md)."
+         return 1 ;;
+      *) MIG_NOTE="migration $name failed ($out)"; return 1 ;;
+    esac
+  done
+  return 0
+}
+
 PROTECTED_RE='^(automation/([^/]+$|prompts/|systemd/)|\.github/|\.claude/|deploy/|docker/|Dockerfile$|package\.json$|package-lock\.json$)'
 
 publish() {
   local t0 note="" sha files migration=0 protected=0 labels draft="" body rc slug bad
-  t0="$(date +%s)"; PR_URL=""; MERGED=0
+  t0="$(date +%s)"; PR_URL=""; MERGED=0; MIG_NOTE=""
   PUB_FILE="$OUT_DIR/publish.md"; : > "$PUB_FILE"
   pub() { echo "- $*" >> "$PUB_FILE"; put_work publish.md < "$PUB_FILE"; }
   if [ "${COMMITS:-0}" -lt 1 ]; then pub "Nothing was committed today, so there is no pull request."; set_status publish skipped 0 "no commits"; return 0; fi
@@ -699,7 +764,7 @@ publish() {
   printf '%s\n' "$files" | grep -Ev '^automation/backlog\.md$' | grep -Eq "$PROTECTED_RE" && protected=1
   pub "Branch: daily/$DATE ($(git -C "$REPO" rev-list --count "$base..$sha") commits, $(printf '%s\n' "$files" | grep -c .) files)"
   pub "Review verdict: $VERDICT. Orchestrator build check: $([ "$BUILD_OK" = 1 ] && echo passed || echo failed)."
-  [ "$migration" = 1 ] && pub "Contains a database migration the founder must apply by hand: $(printf '%s\n' "$files" | grep '^supabase/migrations/' | tr '\n' ' ')"
+  [ "$migration" = 1 ] && pub "Contains a database migration: $(printf '%s\n' "$files" | grep '^supabase/migrations/' | tr '\n' ' ')"
   [ "$protected" = 1 ] && pub "Touches pipeline, deployment or package files, so it is never merged automatically: $(printf '%s\n' "$files" | grep -E "$PROTECTED_RE" | grep -v '^automation/backlog\.md$' | tr '\n' ' ')"
 
   # Refuse to publish what must never be public or does not follow the commit rules.
@@ -727,13 +792,13 @@ publish() {
   fi
   gh label create daily-agent --repo "$slug" --color 202a31 --description "Opened by the daily agent run" --force >> "$RUN_LOG" 2>&1
   labels="daily-agent"
-  if [ "$migration" = 1 ]; then gh label create needs-migration --repo "$slug" --color fdf0d9 --description "Contains a database migration to apply by hand" --force >> "$RUN_LOG" 2>&1; labels="$labels,needs-migration"; fi
+  if [ "$migration" = 1 ]; then gh label create needs-migration --repo "$slug" --color fdf0d9 --description "Contains a database migration" --force >> "$RUN_LOG" 2>&1; labels="$labels,needs-migration"; fi
   [ "$VERDICT" = PASS ] && [ "$BUILD_OK" = 1 ] || draft="--draft"
 
   body="$OUT_DIR/pr-body.md"
   {
     echo "Daily run $DATE. Review verdict: **$VERDICT**. Build check: **$([ "$BUILD_OK" = 1 ] && echo passed || echo failed)**."
-    [ "$migration" = 1 ] && { echo; echo "**Needs a migration applied by hand** before the new behaviour is live: $(printf '%s\n' "$files" | grep '^supabase/migrations/' | sed 's/^/`/;s/$/`/' | tr '\n' ' ')"; }
+    [ "$migration" = 1 ] && { echo; echo "**Contains a migration**, applied by the run before the merge when the safety check allows it: $(printf '%s\n' "$files" | grep '^supabase/migrations/' | sed 's/^/`/;s/$/`/' | tr '\n' ' ')"; }
     [ "$protected" = 1 ] && { echo; echo "**Touches pipeline, deployment or package files.** Read those changes with extra care."; }
     echo; echo "## Plan"; echo; [ -n "$(ws_file plan.md)" ] && head -c 20000 "$WORK/plan.md"
     echo; echo "## Review"; echo; [ -n "$(ws_file review.md)" ] && head -c 20000 "$WORK/review.md" || echo "No review was produced."
@@ -750,13 +815,18 @@ publish() {
   pub "Pull request: $PR_URL ($([ -n "$draft" ] && echo draft || echo "ready for review"), labels: $labels)"
   note="PR $PR_URL"
 
-  if [ "${AUTO_MERGE:-0}" != 1 ]; then pub "Auto-merge is off: waiting for the founder to review and merge."
-  elif [ "$VERDICT" != PASS ]; then pub "Not merged: the review verdict is $VERDICT."
+  if [ "${AUTO_MERGE:-0}" != 1 ]; then pub "Auto-merge is off: the pull request waits to be merged by hand."
+  elif [ "$VERDICT" != PASS ]; then pub "Not merged: the CTO's verdict is $VERDICT. The pull request stays open as a draft for tomorrow's run."
   elif [ "$BUILD_OK" != 1 ]; then pub "Not merged: the orchestrator's build check failed."
-  elif [ "$migration" = 1 ]; then pub "Not merged: it contains a migration that has to be applied by hand first."
-  elif [ "$protected" = 1 ]; then pub "Not merged: it touches pipeline, deployment or package files."
+  elif [ "$protected" = 1 ]; then
+    pub "Not merged: it touches pipeline, deployment or package files."
+    ask "Review pull request $PR_URL by hand" "It changes pipeline, deployment or package files, which the agents may not merge themselves." "Open the link and merge it, or close it."
+  elif [ "$migration" = 1 ] && ! apply_migrations "$base" "$sha"; then pub "Not merged: $MIG_NOTE."
   elif with_timeout 180 gh pr merge "$PR_URL" --squash --delete-branch --subject "$TITLE" --body "" >> "$RUN_LOG" 2>&1; then
-    MERGED=1; pub "Merged into main (squash). Vercel deploys production from main."; note="$note, merged"
+    MERGED=1; pub "Merged into main by the CTO's PASS (squash). Vercel deploys production from main."; note="$note, merged"
+    with_timeout 120 git -C "$REPO" fetch --quiet origin >> "$RUN_LOG" 2>&1
+    if wait_release "$(git -C "$REPO" rev-parse origin/main 2>/dev/null)"; then pub "Production serves the new release: ${NEW_REL#* }"
+    else pub "The new production release was not confirmed within 10 minutes."; fi
     update_container
   else pub "The merge failed (see run.log); the pull request stays open."
   fi
@@ -777,7 +847,7 @@ enforce_commit_rules() {
 secret_in_diff() {
   local diff="$OUT_DIR/.diff.tmp" hit=1 v
   git -C "$REPO" diff "$1" "$2" > "$diff"
-  for v in "${CLAUDE_CODE_OAUTH_TOKEN:-}" "${SMTP_PASS:-}" "${CRON_SECRET:-}"; do
+  for v in "${CLAUDE_CODE_OAUTH_TOKEN:-}" "${SMTP_PASS:-}" "${CRON_SECRET:-}" "${MIGRATE_SECRET:-}"; do
     if [ "${#v}" -ge 8 ] && grep -qF -- "$v" "$diff"; then hit=0; fi
   done
   if grep -E '^\+' "$diff" | grep -Eq 'sk-ant-[A-Za-z0-9_-]{20,}|sk_live_[A-Za-z0-9]{16,}|sb_secret_[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}'; then hit=0; fi
@@ -816,6 +886,49 @@ update_container() {
 # ------------------------------------------------------------------------------------------------
 # Report, email, housekeeping (trusted side)
 # ------------------------------------------------------------------------------------------------
+# Requests a stage wrote for the founder (requests.md: "- what | why | how"), added to the run's own.
+gather_requests() {
+  local f; f="$(ws_file requests.md)"; [ -n "$f" ] || return 0
+  grep -E '^- [^|]{8,200}\|' "$f" | head -n 5 | cut -c3-700 | LC_ALL=C tr -d '\000-\010\013-\037' >> "$REQ_FILE"
+  rm -f "$f"
+}
+
+# Facts for the report stage, written by the orchestrator: releases, open requests, site numbers.
+site_facts() {
+  local prev_c="${PREV_REL%% *}" prev_u="" new_u="" stats
+  [ -n "$PREV_REL" ] && prev_u="${PREV_REL#* }"; [ -n "$NEW_REL" ] && new_u="${NEW_REL#* }"
+  gather_requests
+  {
+    echo "# Release (written by the orchestrator)"; echo
+    echo "- Live site: $SITE_URL"
+    if [ -n "$PREV_REL" ]; then echo "- Previous production release (live when the run started): ${prev_u:-address not reported} (commit ${prev_c:0:7})"
+    else echo "- Previous production release: not recorded (the site did not report its release when the run started)"; fi
+    if [ -n "$NEW_REL" ]; then echo "- New production release (live now): ${new_u:-address not reported} (commit ${NEW_REL:0:7})"
+    elif [ "${MERGED:-0}" = 1 ]; then echo "- New production release: merged, but production had not confirmed the new release when the run ended"
+    else echo "- New production release: none today (nothing was merged); the previous release is still live"; fi
+    [ -n "${PR_URL:-}" ] && echo "- Pull request: $PR_URL ($([ "${MERGED:-0}" = 1 ] && echo merged || echo "not merged"))"
+  } > "$OUT_DIR/release.md"
+  put_work release.md < "$OUT_DIR/release.md"
+  if [ -s "$REQ_FILE" ]; then put_work asks.md < "$REQ_FILE"; else echo "Nothing is needed from the founder today." | put_work asks.md; fi
+  [ -f "$REPO/automation/work/collect-last.json" ] && put_work collect-last.json < "$REPO/automation/work/collect-last.json"
+  stats="$(curl -fsS -m 20 "$SITE_URL/api/public/stats" 2>/dev/null | head -c 30000)"
+  if [ -n "$stats" ] && printf '%s' "$stats" | jq -e . >/dev/null 2>&1; then printf '%s\n' "$stats" | put_work site-stats.json; fi
+  return 0
+}
+
+# The CEO agent's request email: only what the founder alone can provide, at most once every three days.
+send_requests() {
+  local n html="$OUT_DIR/request.html" rc
+  [ -s "$REQ_FILE" ] || return 0
+  if [ "$DRY_RUN" = 1 ]; then n="$(python3 "$REPO/automation/request_mail.py" "$REQ_FILE" --date "$DATE" --out "$html" 2>> "$RUN_LOG" | tail -n 1)"
+  else n="$(python3 "$REPO/automation/request_mail.py" "$REQ_FILE" --date "$DATE" --out "$html" --seen "$MEMORY/requests-sent.txt" 2>> "$RUN_LOG" | tail -n 1)"; fi
+  case "$n" in ''|0|*[!0-9]*) log "[requests] nothing new to ask the founder"; return 0 ;; esac
+  if [ "$DRY_RUN" = 1 ]; then log "[requests] dry run: not sent. Request email: $html"; return 0; fi
+  if [ -z "${SMTP_HOST:-}" ] || [ -z "${REPORT_TO:-}" ]; then set_status requests skipped 0 "SMTP not configured; request email kept on disk"; return 0; fi
+  with_timeout 120 python3 "$REPO/automation/send_report.py" "$html" --date "$DATE" --subject "FoundReach needs you: $n request$([ "$n" = 1 ] || echo s) – $DATE" >> "$RUN_LOG" 2>&1; rc=$?
+  if [ "$rc" = 0 ]; then set_status requests ok 0 "$n sent to $REPORT_TO"; else set_status requests failed 0 "send_report.py exit $rc (see run.log)"; fi
+}
+
 collect_work() {
   # Stage output is copied as plain files; links are not followed.
   local f
@@ -850,6 +963,7 @@ finish_report() {
     else
       echo '<p style="background:#fdf0d9;color:#6b4400;padding:12px;margin:0 0 16px">The report stage did not produce a report today, so this is the plain summary written by the script.</p>'
     fi
+    [ -f "$OUT_DIR/release.md" ] && { echo '<pre style="white-space:pre-wrap;font-family:inherit;margin:0 0 12px">'; grep '^- ' "$OUT_DIR/release.md" | html_escape; echo '</pre>'; }
     [ -n "${PR_URL:-}" ] && echo "<p>Pull request: <a href=\"$(printf '%s' "$PR_URL" | html_escape)\" style=\"color:#34490f\">$(printf '%s' "$PR_URL" | html_escape)</a></p>"
     echo '<p style="font-weight:bold;margin:16px 0 8px">Steps</p><table role="presentation" width="100%" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-size:14px">'
     awk -F '\t' '{print $1 "\t" $2 "\t" $4}' "$STATUS_FILE" | html_escape | awk -F '\t' '{printf "<tr><td style=\"border-top:1px solid #e3e7dc;vertical-align:top\"><strong>%s</strong></td><td style=\"border-top:1px solid #e3e7dc;vertical-align:top\">%s</td><td style=\"border-top:1px solid #e3e7dc;color:#59645a\">%s</td></tr>\n", $1, $2, $3}'
@@ -876,6 +990,7 @@ remember() {
   [ "$DRY_RUN" = 1 ] && { rm -f "$MEMORY/reviewed.md.new"; return 0; }
   if [ -f "$MEMORY/reviewed.md.new" ]; then cat "$MEMORY/reviewed.md.new" >> "$MEMORY/reviewed.md"; rm -f "$MEMORY/reviewed.md.new"; fi
   if [ -f "$MEMORY/reviewed.md" ]; then tail -n 400 "$MEMORY/reviewed.md" > "$MEMORY/reviewed.md.tmp" && mv "$MEMORY/reviewed.md.tmp" "$MEMORY/reviewed.md"; fi
+  [ -f "$OUT_DIR/review.md" ] && head -c 30000 "$OUT_DIR/review.md" > "$MEMORY/last-review.md"
   [ "${AI_OK:-0}" = 1 ] && echo "- $DATE | ${TITLE:-no plan} | verdict ${VERDICT:-NONE} | ${PR_URL:-no pull request}$([ "${MERGED:-0}" = 1 ] && echo " | merged")" >> "$MEMORY/decisions.md"
   if [ -f "$MEMORY/decisions.md" ]; then tail -n 120 "$MEMORY/decisions.md" > "$MEMORY/decisions.md.tmp" && mv "$MEMORY/decisions.md.tmp" "$MEMORY/decisions.md"; fi
   return 0
@@ -895,7 +1010,7 @@ prune_old() {
 run_single_stage() {
   [ -f "$STATUS_FILE" ] || : > "$STATUS_FILE"
   case "$ONLY_STAGE" in
-    email) finish_report; send_email; return 0 ;;
+    email) finish_report; send_email; send_requests; return 0 ;;
   esac
   check_ai_ready
   [ "$AI_OK" = 1 ] || { log "cannot run --stage $ONLY_STAGE: $AI_WHY"; return 1; }
@@ -915,8 +1030,9 @@ run_single_stage() {
     design) run_stage design ;;
     build) run_stage build; after_build ;;
     review) run_stage review; after_review ;;
-    publish) after_build; after_review; publish ;;
-    report) run_stage report ;;
+    publish) PREV_REL="$(site_version)"; NEW_REL=""; after_build; after_review; publish; site_facts ;;
+    report) [ -f "$OUT_DIR/release.md" ] || { PREV_REL="$(site_version)"; NEW_REL=""; MERGED=0; site_facts; }
+      write_context; run_stage report ;;
   esac
   collect_work
   [ "$ONLY_STAGE" = report ] && finish_report

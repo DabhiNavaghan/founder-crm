@@ -11,8 +11,9 @@ write down why in your output file and stop.
 - Direction: a directory of companies for all countries, useful to anyone who needs company data:
   people hiring, people looking for a job, founders reaching founders, partnerships, sales,
   investors, and other needs the research finds.
-- One feature per day. Small and finished beats large and half-done. If the chosen feature turns out
-  bigger than one run, ship the smallest complete slice and put the rest in the backlog.
+- Up to three improvements per day: one main feature and at most two smaller ones. Small and finished
+  beats large and half-done. If an item turns out bigger than one run, ship the smallest complete
+  slice and put the rest in the backlog.
 - Every change must keep `npm run build` passing.
 
 ## Privacy and people
@@ -27,7 +28,7 @@ write down why in your output file and stop.
 ## Collecting data
 
 - Collect only from sources whose robots.txt and terms allow automated collection. If the terms are
-  unclear, do not collect: add a backlog item asking the founder to decide.
+  unclear, do not collect: the CEO and PM record that decision and move to another source.
 - No logins, no paywalls, no bypassing rate limits or bot protection.
 - Low request rates: honour `Crawl-delay`, pause between requests, cache what was fetched.
 - Record the source URL for every collected fact.
@@ -50,13 +51,30 @@ write down why in your output file and stop.
   environment variables that already exist.
 - No new paid services, no new accounts, no new third-party scripts or trackers on public pages.
 - Do not add or upgrade npm packages. If a package is truly needed, describe it in the plan as
-  something the founder must approve.
-- Database changes exist only as new, idempotent migration files in `supabase/migrations/`. They are
-  never applied by an agent; the founder applies them by hand. Code that depends on a new migration
-  must keep working before the migration is applied.
+  a request to the founder (see "Who decides").
+- Database changes exist only as new, idempotent migration files in `supabase/migrations/`. An
+  agent never applies one. After the CTO's PASS the orchestrator applies new files, then merges.
+  Code that depends on a new migration must keep working before the migration is applied.
+- A migration only adds: tables, columns, indexes, functions, policies, grants. Never `drop table`,
+  `drop column`, `truncate`, `delete from`, a change to row level security being on, anything that
+  touches `app_secrets`, `applied_migrations` or the sign-in tables, and never an edit to an
+  existing migration file. Such a file is held and waits for a person.
 - Do not edit the pipeline itself (`automation/` other than `automation/backlog.md` and your work
   folder), `.github/`, `deploy/`, `docker/`, `Dockerfile`, or anything under `.claude/`.
 - Never push, never open or merge pull requests, never deploy. The orchestrator script does that.
+
+## Who decides
+
+- The founder does not review the daily work. The team decides and ships on its own.
+- The CEO and the PM make every product and business decision: what to build, what to drop, which
+  audience and country comes first, which source to use next. They decide; they do not ask.
+- The CTO owns everything technical: code review, the database, performance, security, and the
+  verdict that merges and releases the day's work.
+- The founder is asked only for what the team cannot get or do itself: a credential or access, money
+  (a paid service or plan), a legal call (a source's terms, a removal dispute), or a step that needs
+  his own account. Such a request goes into `requests.md` in the work folder, one line each:
+  `- <what is needed> | <why, in one sentence> | <exactly what he should do or send>`.
+  At most three a day. The CEO agent mails them. Never ask for a secret to be put in the repository.
 
 ## Quality
 

@@ -45,3 +45,14 @@ test('library files under api/ are not routes', () => {
     assert.ok(!/\/_/.test(destination.split('?')[0]), `${destination} points into a private folder`);
   }
 });
+
+test('the version endpoint reports the release without leaking anything else', async () => {
+  const { default: handler } = await import('../api/version.js');
+  const headers = {}; let body = '';
+  const res = { setHeader: (k, v) => { headers[k] = v; }, end: b => { body = b; } };
+  process.env.VERCEL_URL = 'example-abc.vercel.app'; process.env.VERCEL_GIT_COMMIT_SHA = 'a'.repeat(40);
+  handler({}, res);
+  assert.deepEqual(Object.keys(JSON.parse(body)).sort(), ['commit', 'environment', 'url']);
+  assert.equal(JSON.parse(body).url, 'https://example-abc.vercel.app');
+  assert.equal(headers['Cache-Control'], 'no-store');
+});

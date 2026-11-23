@@ -88,9 +88,9 @@ def to_text(html):
 
 
 # ---- message and delivery -----------------------------------------------------------------------
-def build_message(html, date, sender, recipients):
+def build_message(html, date, sender, recipients, subject=''):
     msg = EmailMessage()
-    msg['Subject'] = 'FoundReach daily report – ' + date
+    msg['Subject'] = subject or 'FoundReach daily report – ' + date
     # A named sender reads as a person-run mailbox rather than a bare address.
     msg['From'] = sender if '<' in sender else formataddr(('FoundReach Reports', sender))
     msg['To'] = ', '.join(recipients)
@@ -138,6 +138,7 @@ def main():
     parser = argparse.ArgumentParser(description='Email the FoundReach daily report.')
     parser.add_argument('html_file')
     parser.add_argument('--date', default='')
+    parser.add_argument('--subject', default='', help='subject line; the default is the daily report subject')
     parser.add_argument('--print', dest='show', action='store_true', help='print the message instead of sending it')
     args = parser.parse_args()
 

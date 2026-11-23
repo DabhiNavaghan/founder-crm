@@ -50,8 +50,9 @@ itself. The whole run stops starting new stages after `DAILY_MAX_MINUTES` (150).
 - No commits: no pull request.
 - Verdict PASS and the script's own build check passed: a pull request, labelled `daily-agent`.
 - Anything else: a **draft** pull request, so the work is not lost.
-- A change under `supabase/migrations/` adds the label `needs-migration`. Migrations are never
-  applied by the automation; you apply them in the Supabase SQL editor.
+- A change under `supabase/migrations/` adds the label `needs-migration`. With auto-merge on, new
+  migration files are applied by the script before the merge (see below); otherwise you apply them
+  in the Supabase SQL editor.
 - Nothing is ever pushed to `main` directly.
 - A branch is not pushed at all if the diff looks like it contains a secret, or if a commit does not
   follow the commit rules (one-line message, one author).
@@ -63,10 +64,40 @@ A pull request is then squash-merged without you only when **all** of these hold
 
 - the review verdict is PASS,
 - the script's own `npm run build` and `npm test` passed,
-- the diff contains no migration,
+- every new migration file passed the safety check and was applied (see "Migrations" below),
 - the diff does not touch the pipeline, deployment or package files (`automation/` other than the
   backlog, `.github/`, `.claude/`, `deploy/`, `docker/`, `Dockerfile`, `package.json`,
   `package-lock.json`).
+
+### Migrations
+
+`automation/apply_migration.py` sends a new migration file to the `run_migration()` database
+function, which applies it once, in one transaction, and records it in `applied_migrations`. It
+needs `MIGRATE_SECRET` in the agents `.env`; the hash of that secret sits in `app_secrets` under the
+name `migrate`. Remove that row to switch the function off.
+
+This is **off until you switch it on**, because it lets an unattended run change the production
+database. To switch it on, run `supabase/migrations/202611250002_run_migration.sql` in the Supabase
+SQL editor, then store the hash of the server's secret:
+
+```sql
+insert into public.app_secrets (name, sha256) values ('migrate', '<sha256 of MIGRATE_SECRET>')
+on conflict (name) do update set sha256 = excluded.sha256;
+```
+
+Until then a pull request with a migration is reviewed by the CTO agent and then waits: the CEO
+agent mails you the file name to apply and the pull request to merge.
+
+A file is **held**, and the pull request stays open, when it drops a table, column, type, schema or
+extension, truncates or deletes rows, turns row level security off, touches the secrets, the
+migration records or the sign-in tables, or edits an existing migration file.
+
+### Who decides, and what reaches you
+
+The CEO and PM agents decide the work; the CTO agent's PASS releases it. You get two kinds of mail:
+the daily report (a one-minute read, with the previous and the new production release), and, only
+when the team needs something it cannot get itself, a short request from the CEO agent
+(`automation/request_mail.py`; the same request is repeated after three days at the earliest).
 
 A merge to `main` deploys production on Vercel and builds the container image. The script then
 waits for that image build and updates the container on this server

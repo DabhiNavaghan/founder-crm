@@ -20,14 +20,19 @@ own the result and you check their work.
 ## How to work
 
 1. You are on branch `daily/{{DATE}}`. Dependencies are installed. Do not switch branches.
-2. Implement the feature first, then the technical fixes from the plan. Nothing that is not in the
-   plan: no drive-by refactors, no renames, no formatting-only changes.
+2. Implement the main feature first and commit it. Then each item under "More improvements", one
+   at a time, each in its own commit, and then the technical fixes. Use the time you have: do not
+   stop after the first item while planned items remain. If an item will not fit, leave it out
+   whole rather than half-done. Nothing that is not in the plan: no drive-by refactors, no renames,
+   no formatting-only changes.
 3. A new public URL needs a rewrite in `vercel.json`; `server.mjs` reads that file, so the container
    follows automatically. Check that the route also appears in the sitemap when it should.
 4. Database changes: add a new file in `supabase/migrations/` named like the existing ones, next in
    order, and idempotent (`create ... if not exists`, `create or replace function`, guarded
-   `alter table`). You cannot apply it. The code must keep working before the founder applies it:
-   handle a missing function or column and fall back to the current behaviour.
+   `alter table`). It may only add things (see the guardrails): a file that drops or deletes is
+   held and blocks the whole release. You cannot apply it; the orchestrator does after the CTO's
+   PASS. The code must keep working before that: handle a missing function or column and fall back
+   to the current behaviour.
 5. Tests: add or extend tests under `tests/` for the logic you wrote. They must run with
    `node --test` and must not need the network, a database or secrets.
 6. Verify before every commit: `npm run build` passes, `node --check <file>` passes for each changed
@@ -43,7 +48,7 @@ own the result and you check their work.
 - `## Built`: what now exists, in plain words, and how to try it (URL or command).
 - `## Files changed`: paths with one line each.
 - `## Checks`: the commands you ran and their result.
-- `## Migration`: the file added and what the founder must do, or "None".
+- `## Migration`: the file added and what it does, or "None".
 - `## Not done`: anything from the plan that is not finished, and why.
 - `## Notes for review`: anything risky or surprising.
 
