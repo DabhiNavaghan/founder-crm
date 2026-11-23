@@ -223,7 +223,17 @@ sandbox_exec() {
     # ...and it is started through env: SELinux does not let systemd itself execute a program that
     # lives in a home folder (claude does), while a process inside the unit may.
     shift; set -- /usr/bin/env "$first" "$@"
-    args=(sudo -n systemd-run --quiet --collect --wait --pipe --unit "$unit"
+    # SELinux does not let systemd take a stream from this script when the script itself runs as
+    # a service (the nightly timer), and not a file from a home folder either. So nothing is
+    # handed over: the unit runs a small script that opens its own input and output files in the
+    # state folder, and the results are copied out afterwards.
+    local io="$STATE/io/$unit"
+    rm -rf "$io"; mkdir -p "$io"; cat "$in" > "$io/in"
+    {
+      printf '{'; printf ' %q' "$@"; printf '; } < %q > %q 2> %q\n' "$io/in" "$io/out" "$io/err"
+      printf 'rc=$?; echo "$rc" > %q; exit "$rc"\n' "$io/rc"
+    } > "$io/run.sh"
+    args=(sudo -n systemd-run --quiet --collect --wait --unit "$unit"
       --uid "$(id -un)" --gid "$(id -gn)" --working-directory "$WS"
       -p NoNewPrivileges=yes -p ProtectSystem=strict -p ProtectHome=tmpfs -p PrivateTmp=yes -p PrivateDevices=yes
       -p ProtectKernelTunables=yes -p ProtectKernelModules=yes -p ProtectControlGroups=yes
@@ -239,9 +249,12 @@ sandbox_exec() {
       --setenv "GIT_COMMITTER_NAME=$GIT_NAME" --setenv "GIT_COMMITTER_EMAIL=$GIT_EMAIL")
     [ -n "$RO_BINDS" ] && args+=(-p "BindReadOnlyPaths=$RO_BINDS")
     [ "$with_token" = 1 ] && [ -n "$TOKEN_ENV" ] && args+=(-p "EnvironmentFile=$TOKEN_ENV")
-    # SELinux does not let systemd hand a unit a file from a home folder as its input or output,
-    # so all three streams go through pipes.
-    cat "$in" | with_timeout $((secs + 60)) "${args[@]}" -- "$@" 2> >(cat > "$err") | cat > "$out"; rc="${PIPESTATUS[1]}"
+    with_timeout $((secs + 60)) "${args[@]}" -- /usr/bin/bash "$io/run.sh" < /dev/null > "$io/launch" 2>&1; rc=$?
+    # The command's own status when it ran; the launcher's when the unit never started.
+    [ -s "$io/rc" ] && [ "$rc" != 124 ] && rc="$(cat "$io/rc")"
+    cat "$io/out" > "$out" 2>/dev/null
+    cat "$io/err" "$io/launch" > "$err" 2>/dev/null
+    rm -rf "$io"
     if [ "$rc" = 124 ]; then sudo -n systemctl stop "$unit" 2>/dev/null; fi
   else
     (
