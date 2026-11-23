@@ -19,6 +19,30 @@ Never delete an item. Finished items move to "Done" at the bottom as one line ea
 
 ## Open
 
+### B-040 Team room slice 1: live agent dashboard at /app/team (founder task #4)
+- Why: founder task #4; data already in `agent_dashboard(p_runs)` (`202611270001_agent_events.sql`)
+- Size: M
+- Status: in progress (2026-11-23)
+- Notes: admin-only route and nav, Now, Team cards, Board, run detail, Night shift, 15 s polling. See task-4 plan.md
+
+### B-041 Team room slice 2: Usage panel and retro text (founder task #4)
+- Why: task.md items 4 (retro part) and 6 (time, turns, tokens, cost per agent, last run and 7 days)
+- Size: S
+- Status: open
+- Notes: build on B-040's `src/lib/team.js`; null `turns`/`cost_usd` must show "–"; bars need a text value too
+
+### B-042 Re-check Antler terms (founder/legal hygiene)
+- Why: CTO review problem 2: no global terms page found; check contact page, footer links, privacy page; switch Antler off like YC if they forbid collection
+- Size: S
+- Status: open
+- Notes: may duplicate an item added on PR #3's branch; merge them when that PR lands
+
+### B-043 `to_enrich()` skips slugs not in COLLECTORS
+- Why: CTO review problem 3: stale `yc-india` candidates still cause site fetches (`scraper/multi.py:812-813`)
+- Size: S
+- Status: open
+- Notes: one line `if slug not in COLLECTORS: continue`; wait until PR #3 merges to avoid a conflict
+
 ### B-001 Go global: countries in the catalog, the pages and the collectors
 - Why: the product direction is a directory for all countries. Today everything is US-only, so most
   of the world's companies and most visitors are left out.
