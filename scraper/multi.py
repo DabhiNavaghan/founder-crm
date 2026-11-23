@@ -1,18 +1,31 @@
 #!/usr/bin/env python3
-"""FoundReach: US startups from sources beyond Y Combinator.
+"""FoundReach: US and Indian startups from sources beyond the US Y Combinator scrape.
 
 Stages (all cached on disk, safe to stop and re-run):
   collect  - read each source's public portfolio listing / API           -> cache/sources/<slug>/
   enrich   - each candidate's own website: is it alive, description, US evidence, careers page,
              contact page, LinkedIn company page, public company emails, icon   -> cache/sites, cache/deep, cache/facts
-  build    - filter (US, operating, working site, description), dedupe on domain across sources and
+  build    - filter (US or India, operating, working site, description), dedupe on domain across sources and
              against the existing catalog, make slugs                    -> out/companies_multi.json
+
+India (founder tasks #2 and #6): Antler rows whose location tag is India get country 'IN'. 'yc-india' is NOT collected:
+YC's Terms of Use forbid scraping (see SKIPPED); its helpers stay for when YC gives permission. India rows carry country
+'India'. India is stated either by the source (Antler's tag) or by the company's own site (india_evidence: a schema.org
+address in India, an Indian city next to a 6-digit PIN, or a "Pvt Ltd" copyright together with a .in domain or an
+Indian city). A city name alone or a domain alone is never evidence, and a site that shows US evidence stays US.
+An Indian row's city comes from its source, else from that Indian address; never from the US-address check.
+Elevation, Stellaris and Prime (task #6) list Indian portfolios with no country per company, so they rely on the site.
+scripts/ingest.mjs holds India rows back until migration 202611260001 is applied.
+
+Fetching: every request made through multi.py sends an honest FoundReachBot User-Agent. HTTP 403/429/503, a challenge
+page and a time-out raise Blocked; collect() records each source as ok|blocked|empty|failed in cache/source_status.json.
 
 Usage: python3 multi.py collect|enrich|build|all [--only a16z,accel] [--limit N] [--refresh] [--show-hn]
   --refresh  re-download the source listings (the weekly manual refresh); website caches are kept.
 
 Sources and why (checked 2026-11-22, see SOURCES below):
   500 Global, Antler, a16z, Sequoia, Accel, Hacker News (Launch HN through the Algolia HN API).
+  Elevation, Stellaris, Prime (India, checked 2026-11-23). Kae (terms) and Z47 (robots.txt) are NOT collected.
   Techstars is NOT collected: its Terms of Use forbid automated gathering of company information.
   Bessemer is NOT collected: its Terms forbid scraping. First Round is NOT collected: its robots.txt disallows AI agents.
 
@@ -25,6 +38,7 @@ only Launch HN badges are, see founder-crm/api/_lib/sources/hn.js):
 Only publicly listed information is collected. People and emails are never guessed.
 """
 import html, json, os, re, sys, time, threading, urllib.parse, urllib.error, datetime
+import email.utils
 
 import scrape
 from scrape import CACHE, OUT, load, save, base_domain, site_key, pick_emails, emails_in, BAD_EMAIL, classify, run
@@ -33,6 +47,8 @@ SRC = os.path.join(CACHE, 'sources')
 FACTS = os.path.join(CACHE, 'facts')
 SITE_URL = 'https://foundreach.navaghandabhi.dev'
 NOW_YEAR = datetime.date.today().year
+# An honest User-Agent for every request made while multi.py runs (scrape.fetch reads scrape.UA at call time). No proxies.
+scrape.UA = 'FoundReachBot/1.0 (+' + SITE_URL + ')'
 
 # name, badge slug, listing page, robots/terms verdict (kept next to the code so the next run re-reads it)
 SOURCES = {
@@ -53,9 +69,29 @@ SOURCES = {
                 'policy': 'robots.txt: "Allow: /"; no login; the /legal page has no clause about automated access or reuse.'},
     'accel': {'name': 'Accel', 'page': 'https://www.accel.com/companies', 'endpoint': 'https://www.accel.com/companies (JSON embedded in the page)',
               'policy': 'robots.txt allows / (only /admin/ and /api/ disallowed, neither is used); no login; no terms-of-use page found.'},
+    'yc-india': {'name': 'Y Combinator', 'page': 'https://www.ycombinator.com/companies',
+                 'endpoint': 'https://yc-oss.github.io/api/companies/all.json (public index, cached 7 days) + https://www.ycombinator.com/companies/<slug>',
+                 'policy': 'NOT collected: YC\'s Terms of Use forbid "data mining, robots, scraping or similar data gathering" (see SKIPPED). '
+                           'robots.txt alone would allow /companies/<slug>. The helpers stay in case YC gives written permission.'},
     'hacker-news': {'name': 'Hacker News', 'page': 'https://news.ycombinator.com/launches',
                     'endpoint': 'https://hn.algolia.com/api/v1/search_by_date (public documented HN Search API)',
                     'policy': 'Public API offered for programmatic use; no key, no login.'},
+    'elevation': {'name': 'Elevation Capital', 'page': 'https://elevationcapital.com/portfolio',
+                  'endpoint': 'https://elevationcapital.com/portfolio + one request per detail page linked from it',
+                  'policy': 'Checked 2026-11-23: /robots.txt is HTTP 404 on apex and www (no rules), so a 2 s pause is used; no login. '
+                            'The /privacy-and-terms page has a heading and no terms text: no clause on automated access or reuse. '
+                            'Only facts are taken (name, website, sector, founders with LinkedIn /in/ links); descriptions come from '
+                            'each company\'s own website. The Elevation office addresses on every page are never used.'},
+    'stellaris': {'name': 'Stellaris Venture Partners', 'page': 'https://www.stellarisvp.com/portfolio',
+                  'endpoint': 'https://www.stellarisvp.com/sitemap.xml (/portfolio/ detail URLs) + the listing for each company\'s status',
+                  'policy': 'Checked 2026-11-23: robots.txt has only a Sitemap line (no Disallow), so a 2 s pause is used; no login; no terms '
+                            'page exists (none in the footer or the sitemap). Only facts are taken; descriptions come from each company\'s '
+                            'own website. Detail pages carry Stellaris staff emails: emails and mailto: links are never read.'},
+    'prime': {'name': 'Prime Venture Partners', 'page': 'https://www.primevp.in/portfolio',
+              'endpoint': 'https://www.primevp.in/portfolio (one page; Next.js payload, HTML fallback)',
+              'policy': 'Checked 2026-11-23: robots.txt allows all except /api/ and /_next/ (neither is fetched); no login; only a '
+                        'privacy policy exists, with no clause on automated access or reuse. Only facts are taken (name, website, '
+                        'founder names); descriptions come from each company\'s own website.'},
 }
 SKIPPED = {
     'techstars': 'robots.txt allows /, and the portfolio page reads a public Typesense search API, BUT the Terms of Use forbid using "any bot, '
@@ -69,6 +105,13 @@ SKIPPED = {
     'lightspeed': 'Allowed by robots.txt, not collected this round: listing loads through admin-ajax with a nonce; names only.',
     'founders-fund': 'Allowed by robots.txt (Crawl-delay 10), not collected this round: ~64 companies, names only.',
     'khosla': 'robots.txt has no rules, not collected this round: listing has names only.',
+    'yc-india': 'robots.txt allows /companies/<slug>, BUT YC\'s Terms of Use say "you will not engage in or use any data mining, robots, '
+                'scraping or similar data gathering or extraction methods". Not collected; needs written permission from YC. '
+                'The yc-oss index has no licence (unclear), so it is held as well.',
+    'kae-capital': 'robots.txt allows all but /wp-admin/, BUT /terms-of-use/ allows only "personal, non-commercial transitory viewing" and '
+                   'forbids "any commercial purpose or for any public display". Not collected (2026-11-23); replaced by Prime.',
+    'z47': 'robots.txt disallows ClaudeBot, anthropic-ai, GPTBot and about 30 more agents (Disallow: /). Not collected (2026-11-23); '
+           'replaced by Stellaris.',
 }
 
 # ---------------------------------------------------------------- small helpers
@@ -129,10 +172,60 @@ def industry_for(*labels):
     return None
 
 
+class Blocked(Exception):
+    """A source refused us (HTTP 403/429/503, a challenge page) or did not answer (status 'timeout'). Never '0 companies'."""
+    def __init__(self, status, url):
+        super().__init__(f'blocked ({status}) at {url}')
+        self.status, self.url = status, url
+
+
+CHALLENGE_TITLE = re.compile(r'<title[^>]*>\s*(?:Just a moment|Attention Required|Access denied|Verify(?:ing)? you are human)', re.I)
+CHALLENGE_TEXT = re.compile(r'cf-chl|Just a moment\.\.\.|captcha|Attention Required', re.I)
+
+
+def is_challenge(text):
+    """A bot-check page instead of the content. A normal page that merely loads a captcha widget for its contact form is not one:
+    the generic markers count only when the page has little readable text. JSON answers are never challenge pages."""
+    t = (text or '').lstrip()[:400000]
+    if t[:1] in ('{', '['): return False
+    if CHALLENGE_TITLE.search(t[:20000]): return True
+    return bool(CHALLENGE_TEXT.search(t)) and len(clean(TAGS.sub(' ', t))) < 3000
+
+
+def retry_after(value, default=30, cap=300):
+    """Seconds to wait from a Retry-After header (seconds or an HTTP date), capped; `default` when missing or unreadable."""
+    v = clean(value)
+    if re.fullmatch(r'\d+', v): return min(int(v), cap)
+    if v:
+        try:
+            d = email.utils.parsedate_to_datetime(v)
+            return max(0, min(cap, int((d - datetime.datetime.now(datetime.timezone.utc)).total_seconds())))
+        except Exception:
+            pass
+    return default
+
+
+def fetch_checked(url, timeout=40, limit=30_000_000):
+    """scrape.fetch, but a refusal or a time-out raises Blocked. After 429/503 it waits (Retry-After) and tries once more."""
+    for attempt in (1, 2):
+        try:
+            _, text = scrape.fetch(url, timeout=timeout, limit=limit)
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 503) and attempt == 1:
+                time.sleep(retry_after(e.headers.get('Retry-After') if e.headers else None))
+                continue
+            if e.code in (403, 429, 503): raise Blocked(e.code, url)
+            raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            raise Blocked('timeout', url)
+        if is_challenge(text): raise Blocked('challenge', url)
+        return text
+
+
 def cached_text(path, url, refresh=False, timeout=40, limit=30_000_000, pause=0.5):
     if os.path.exists(path) and not refresh:
         with open(path, encoding='utf-8') as f: return f.read()
-    _, text = scrape.fetch(url, timeout=timeout, limit=limit)
+    text = fetch_checked(url, timeout=timeout, limit=limit)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path + '.tmp', 'w', encoding='utf-8') as f: f.write(text)
     os.replace(path + '.tmp', path)
@@ -204,6 +297,106 @@ def collect_500(refresh):
     return out
 
 
+def antler_country(loc):
+    """Antler's first tag is the country: 'US' and 'IN' are kept, any other country is 'other', no tag is ''."""
+    loc = clean(loc)
+    if loc.upper() in ('US', 'USA', 'UNITED STATES'): return 'US'
+    if loc.lower() == 'india': return 'IN'
+    return 'other' if loc else ''
+
+
+# ---- Y Combinator, India. The index is public JSON; founders come from the YC company page (scrape.yc_company, cached per slug).
+YC_PAGES_PER_RUN = 150          # at most this many uncached YC company pages per run; the rest wait for the next night
+YC_INDEX_MAX_AGE = 7 * 86400    # re-download the public index when the cached copy is older than this
+YC_SEASON = {'winter': 'W', 'summer': 'S', 'fall': 'F', 'spring': 'X'}
+
+
+def yc_city(all_locations):
+    """'Bengaluru, KA, India; Remote' -> 'Bengaluru'. Only the first listed location counts; a bare 'Remote' is no city."""
+    first = clean((all_locations or '').split(';')[0])
+    parts = [p.strip() for p in first.split(',') if p.strip()]
+    return parts[0] if len(parts) >= 2 else ''
+
+
+def is_yc_india(c):
+    """Operating YC company whose first listed location is in India. `regions` alone also tags US companies with an Indian office."""
+    first = clean((c.get('all_locations') or '').split(';')[0])
+    return ('India' in (c.get('regions') or []) and c.get('status') in ('Active', 'Public')
+            and bool(re.search(r'(^|,\s*)India$', first)))
+
+
+def yc_people(founders):
+    """YC founders -> catalog people: name, role and a personal LinkedIn /in/ link only. Nothing else is copied (no email)."""
+    out, seen = [], set()
+    for f in founders or []:
+        name = clean(f.get('name'))
+        if not name or '@' in name or f.get('active') is False or name.lower() in seen: continue   # former founders are not listed
+        seen.add(name.lower())
+        parts = name.split()
+        role = clean(f.get('title')) or 'Founder'
+        li = clean(f.get('linkedin_url'))
+        if li and not re.match(r'https?://', li, re.I): li = 'https://' + li.lstrip('/')
+        li = li if re.match(r'https?://([a-z0-9-]+\.)*linkedin\.com/in/[^/?#\s]+', li, re.I) else ''
+        out.append({'first_name': parts[0], 'last_name': ' '.join(parts[1:]), 'role': role[:160], 'role_category': classify(role),
+                    'linkedin_url': li})
+    return out[:12]
+
+
+def yc_batch(batch):
+    """'Winter 2015' -> ('YC W15', 2015); anything else -> ('Y Combinator', year or None)."""
+    m = re.fullmatch(r'(Winter|Summer|Fall|Spring)\s+((?:19|20)\d\d)', clean(batch), re.I)
+    if m: return f'YC {YC_SEASON[m.group(1).lower()]}{m.group(2)[2:]}', int(m.group(2))
+    y = re.search(r'\b((?:19|20)\d\d)\b', clean(batch))
+    return 'Y Combinator', int(y.group(1)) if y else None
+
+
+def yc_candidate(c, d):
+    """One yc-india candidate from the index record `c` and the cached company page `d`."""
+    logo = c.get('small_logo_thumb_url') or ''
+    li = clean(d.get('linkedin_url'))
+    if li and not re.match(r'https?://', li, re.I): li = 'https://' + li.lstrip('/')
+    label, year = yc_batch(c.get('batch'))
+    url = c.get('url') or f"https://www.ycombinator.com/companies/{c.get('slug')}"
+    return {'source': 'yc-india', 'name': clean(c.get('name')), 'website': norm_url(c.get('website')),
+            'description': clean(c.get('one_liner')), 'sector': clean((c.get('subindustry') or '').split(' -> ')[-1]) or clean(c.get('industry')),
+            'industry': industry_for(c.get('industry'), c.get('subindustry')),
+            'location': yc_city(c.get('all_locations')) or clean(d.get('city')), 'country': 'IN', 'active': True,
+            'source_url': url, 'badge': label, 'badge_source': 'yc', 'year': year, 'people': yc_people(d.get('founders')),
+            'linkedin_url': li if '/company/' in li else '', 'logo_url': norm_url(logo) if 'missing' not in logo else '',
+            'careers_url': url + '/jobs' if c.get('isHiring') or d.get('jobs') else ''}
+
+
+def yc_all(refresh):
+    path = os.path.join(CACHE, 'yc_all.json')
+    fresh = os.path.exists(path) and time.time() - os.path.getmtime(path) < YC_INDEX_MAX_AGE
+    data = load(path) if fresh and not refresh else None
+    if not data:
+        try:
+            _, text = scrape.fetch(scrape.YC_INDEX, timeout=90, limit=50_000_000)
+            data = json.loads(text); save(path, data)
+        except Exception as e:     # keep working from the older copy
+            print(f'[collect] yc-india: index download failed ({type(e).__name__}), using the cached copy', flush=True)
+            data = load(path) or []
+    return data
+
+
+def collect_yc_india(refresh):
+    out, fetched, waiting = [], 0, 0
+    for c in yc_all(refresh):
+        if not is_yc_india(c) or not c.get('slug'): continue
+        path = os.path.join(CACHE, 'yc', c['slug'] + '.json')
+        if not os.path.exists(path):
+            if fetched >= YC_PAGES_PER_RUN: waiting += 1; continue    # next night carries on from here
+            fetched += 1
+            scrape.yc_company(c)                                        # caches the page facts and pauses between requests
+        d = load(path) or {}
+        if not d or d.get('missing'): continue
+        if d.get('country') and d['country'] not in ('IN', 'India'): continue   # the company page places it elsewhere
+        out.append(yc_candidate(c, d))
+    print(f'[collect] yc-india: {fetched} YC pages fetched, {waiting} left for the next run', flush=True)
+    return out
+
+
 def collect_antler(refresh):
     base = SOURCES['antler']['page']
     out, url, page = [], base, 1
@@ -227,7 +420,7 @@ def collect_antler(refresh):
             y = int(year) if re.fullmatch(r'(19|20)\d\d', year) else None
             out.append({'source': 'antler', 'name': name, 'website': norm_url(html.unescape(href.group(1))) if href else '',
                         'description': field('description'), 'sector': sector, 'industry': industry_for(sector),
-                        'location': '', 'country': 'US' if loc.upper() in ('US', 'USA', 'UNITED STATES') else ('other' if loc else ''),
+                        'location': '', 'country': antler_country(loc),
                         'active': True, 'source_url': base, 'badge': f'Antler {y}' if y else 'Antler portfolio', 'year': y,
                         'people': [], 'linkedin_url': '', 'raw_location': loc})
         nxt = re.search(r'<a href="(\?[0-9a-f]+_page=\d+)"[^>]*class="w-pagination-next', text)
@@ -309,6 +502,308 @@ def collect_sequoia(refresh):
     return out
 
 
+# ---- India portfolios (founder task #6): Elevation, Stellaris, Prime. None states a country per company, so every row
+# leaves country '' and India comes from the company's own site (india_evidence). Only facts are taken; no descriptions.
+INDIA_SITE_SOURCES = {'elevation', 'stellaris', 'prime', 'accel'}   # rows whose website is checked for an Indian address
+INDIA_PAUSE = 2.0               # none of the three gives a Crawl-delay: 2 s between requests
+DETAIL_MAX_AGE = 30 * 86400     # a cached detail page is re-fetched only after 30 days, whatever --refresh says
+DETAIL_CAP = 150                # at most this many new detail fetches per source per run; the next night carries on
+_detail_blocks = {}             # source slug -> Blocked raised on a detail page during this run (read by collect())
+
+FUND_HOSTS = re.compile(r'(^|\.)(elevationcapital\.com|stellarisvp\.com|primevp\.in|sanity\.io|webflow\.com|website-files\.com|'
+                        r'cloudfront\.net|googletagmanager\.com|gstatic\.com|googleapis\.com|w3\.org|schema\.org|tiktok\.com|'
+                        r'threads\.net|spotify\.com|accel\.com)$', re.I)
+ANCHOR = re.compile(r'<a\b([^>]*)>(.*?)</a>', re.S | re.I)
+LI_IN = re.compile(r'https?://([a-z0-9-]+\.)*linkedin\.com/in/[^/?#\s"\'<>]+', re.I)
+ROLE_WORDS = re.compile(r'\b(founder|co-?founder|ceo|cto|coo|cfo|cpo|chief|director|partner|president|head|vp|principal|associate|'
+                        r'analyst|managing|chairman|officer)\b', re.I)
+NOT_A_NAME = re.compile(r'^(investing stage|entry stage|elevation team|stellaris team|view all|read more|visit website|co-?investors?|'
+                        r'linked ?in|the team|our team|know more|learn more)$', re.I)
+FOUNDERS_HEAD = r'>\s*Founders?\s*(?=<)'   # an element whose whole text is "Founder(s)"; the block starts at its closing tag
+STAGE_WORD = re.compile(r'^(pre-?seed|seed|early|early stage|growth|late|series [a-f]|idea)$', re.I)
+
+
+def anchors(page):
+    """(href, text, start, end, attrs, inner) for each <a> of a page. Text has tags removed; an aria-label stands in for empty text."""
+    for m in ANCHOR.finditer(page or ''):
+        attrs = m.group(1)
+        h = re.search(r'\bhref\s*=\s*["\']([^"\']+)["\']', attrs)
+        text = clean(TAGS.sub(' ', m.group(2)))
+        if not text:
+            al = re.search(r'\baria-label\s*=\s*["\']([^"\']+)["\']', attrs)
+            text = clean(al.group(1)) if al else ''
+        yield html.unescape(h.group(1)).strip() if h else '', text, m.start(), m.end(), attrs, m.group(2)
+
+
+def segments(fragment):
+    """The visible text pieces of an HTML fragment, in order."""
+    return [s for s in (clean(x) for x in re.split(r'<[^>]+>', TAGS.sub(lambda m: ' ' if m.group(1) else m.group(0), fragment or ''))) if s]
+
+
+def own_site(u):
+    """A company's own website: not a platform (LinkedIn, GitHub, ...), not the fund's own site or its CDN."""
+    d = domain_of(u)
+    return bool(d) and not PLATFORM.search(d) and not FUND_HOSTS.search(d)
+
+
+def no_emails(page):
+    """Fund pages carry staff emails: drop mailto: links and anything shaped like an email before anything is read."""
+    page = re.sub(r'<a\b[^>]*href=["\']mailto:[^"\']*["\'][^>]*>.*?</a>', ' ', page or '', flags=re.S | re.I)
+    page = re.sub(r'mailto:[^"\'\s<>]*', ' ', page, flags=re.I)
+    return scrape.EMAIL.sub(' ', page)
+
+
+def linkedin_in(u):
+    """A personal LinkedIn /in/ link with its query string removed, or ''."""
+    m = LI_IN.match(clean(u))
+    return m.group(0).rstrip('/') + '/' if m else ''
+
+
+def person_name(s):
+    s = clean(s)
+    if '@' in s or NOT_A_NAME.match(s) or ROLE_WORDS.search(s): return ''
+    if not re.fullmatch(r"[^\W\d_](?:[^\W\d_]|[.'’\- ]){2,58}", s): return ''
+    return s if 2 <= len(s.split()) <= 5 else ''
+
+
+def founders_between(page, start_rx, end_rx):
+    """People with a LinkedIn /in/ link between a 'Founders' heading and the next block (the fund's own team). Nothing outside it:
+    with no closing block nobody is taken, so a fund partner can never be listed as a founder."""
+    s = re.search(start_rx, page or '')
+    if not s: return []
+    e = re.search(end_rx, page[s.end():], re.I)
+    if not e: return []
+    block = page[s.end():s.end() + e.start()]
+    links = [a for a in anchors(block) if linkedin_in(a[0])]
+    out, seen, last = [], set(), 0
+    for i, (href, text, start, end, _, _) in enumerate(links):
+        li = linkedin_in(href)
+        before = segments(block[last:start])
+        after = segments(block[end:links[i + 1][2] if i + 1 < len(links) else len(block)])
+        name = person_name(text) or next((person_name(x) for x in reversed(before) if person_name(x)), '') \
+            or next((person_name(x) for x in after if person_name(x)), '')
+        last = end
+        if not name or li in seen: continue
+        seen.add(li)
+        role = next((x for x in before + after if ROLE_WORDS.search(x) and len(x) <= 60 and '@' not in x), '') or 'Founder'
+        parts = name.split()
+        out.append({'first_name': parts[0], 'last_name': ' '.join(parts[1:]), 'role': role, 'role_category': classify(role),
+                    'linkedin_url': li})
+    return out[:12]
+
+
+def sector_after_stage(segs):
+    """Elevation and Stellaris print 'stage, sector': the short piece right after a stage word ('Seed', 'Growth') is the sector."""
+    for i, s in enumerate(segs[:-1]):
+        nxt = segs[i + 1]
+        if STAGE_WORD.match(s) and len(nxt) <= 40 and not STAGE_WORD.match(nxt) and industry_for(nxt): return nxt
+    return ''
+
+
+def india_candidate(slug, name, website, sector, source_url, people, year=None, linkedin=''):
+    meta = SOURCES[slug]
+    return {'source': slug, 'name': tidy_name(name), 'website': norm_url(website) if own_site(website) else '', 'description': '',
+            'sector': sector, 'industry': industry_for(sector), 'location': '', 'country': '', 'active': True,
+            'source_url': source_url, 'badge': f"{meta['name']} {year}" if year else f"{meta['name']} portfolio", 'year': year,
+            'people': people, 'linkedin_url': linkedin}
+
+
+class DetailPages:
+    """One source's detail pages, cached in cache/sources/<slug>/detail/. A cached page is re-fetched only after DETAIL_MAX_AGE,
+    whatever --refresh says; at most `cap` new fetches per run, so the next night continues where this one stopped. A Blocked
+    on a detail page stops this source's detail fetches for the run (older cached pages are still read)."""
+    def __init__(self, slug, cap=DETAIL_CAP, pause=INDIA_PAUSE):
+        self.slug, self.cap, self.pause = slug, cap, pause
+        self.fetched = self.waiting = 0
+        self.blocked = None
+
+    def path(self, key):
+        return os.path.join(SRC, self.slug, 'detail', (re.sub(r'[^a-z0-9-]+', '-', key.lower()).strip('-') or 'index')[:100] + '.html')
+
+    def get(self, key, url):
+        path = self.path(key)
+        have = os.path.exists(path)
+        if have and time.time() - os.path.getmtime(path) < DETAIL_MAX_AGE: return cached_text(path, url)
+        if self.blocked or self.fetched >= self.cap:
+            if not self.blocked: self.waiting += 1
+            return cached_text(path, url) if have else None
+        self.fetched += 1
+        try:
+            return cached_text(path, url, refresh=True, timeout=25, limit=3_000_000, pause=self.pause)
+        except Blocked as e:
+            self.blocked = _detail_blocks[self.slug] = e
+        except Exception as e:
+            print(f'[collect] {self.slug}: {url} failed ({type(e).__name__})', flush=True)
+        return cached_text(path, url) if have else None
+
+    def report(self):
+        print(f'[collect] {self.slug}: {self.fetched} detail pages fetched, {self.waiting} left for the next run'
+              + (f', blocked ({self.blocked.status}) at {self.blocked.url}' if self.blocked else ''), flush=True)
+
+
+ELEVATION_NAV = {'/portfolio', '/team', '/about', '/about-us', '/insights', '/privacy-and-terms', '/contact', '/careers', '/news', '/blog',
+                 '/founders', '/people', '/approach', '/stories', '/media', '/jobs', '/terms', '/privacy'}
+
+
+def elevation_cards(listing, base='https://elevationcapital.com/portfolio'):
+    """(path, card inner HTML) per company. Detail hrefs are read from the listing, never built from names: /portfolio/<slug>,
+    or a one-segment path whose link wraps a card (an image or 40+ characters of text). '/' (Indiamart) is skipped."""
+    out, seen = [], set()
+    for href, text, _, _, _, inner in anchors(listing):
+        p = urllib.parse.urlparse(urllib.parse.urljoin(base, href))
+        if p.netloc and not p.netloc.lower().endswith('elevationcapital.com'): continue
+        path = p.path.rstrip('/').lower()
+        if not path or path in ELEVATION_NAV or path in seen: continue
+        if not (re.fullmatch(r'/portfolio/[a-z0-9-]+', path) or (re.fullmatch(r'/[a-z0-9-]+', path) and ('<img' in inner.lower() or len(text) >= 40))):
+            continue
+        seen.add(path)
+        out.append((path, inner))
+    return out
+
+
+def parse_elevation_detail(page):
+    """{name, website, people, sector} from /portfolio/<slug>. The website is the link 'Visit <name> website'. Founders are the /in/
+    links between the 'Founders' heading and 'Elevation Team'; the Elevation partners after it are never taken."""
+    page = no_emails(page)
+    name = website = ''
+    for href, text, *_ in anchors(page):
+        m = re.fullmatch(r'Visit\s+(.+?)\s+website', text, re.I)
+        if m and own_site(href):
+            name, website = clean(m.group(1)), norm_url(href)
+            break
+    f = re.search(FOUNDERS_HEAD, page)
+    return {'name': name, 'website': website, 'people': founders_between(page, FOUNDERS_HEAD, r'Elevation\s+Team'),
+            'sector': sector_after_stage(segments(page[:f.start()] if f else page))}
+
+
+def collect_elevation(refresh):
+    base = SOURCES['elevation']['page']
+    listing = cached_text(os.path.join(SRC, 'elevation', 'portfolio.html'), base, refresh, pause=INDIA_PAUSE)
+    pages, out = DetailPages('elevation'), []
+    for path, inner in elevation_cards(listing):
+        url = urllib.parse.urljoin(base, path)
+        page = pages.get(path, url)
+        d = parse_elevation_detail(page) if page else {}
+        card = segments(inner)
+        name = d.get('name') or (card[0] if card and len(card[0]) <= 60 else '')
+        if not name: continue
+        out.append(india_candidate('elevation', name, d.get('website', ''), sector_after_stage(card) or d.get('sector', ''), url,
+                                   d.get('people') or []))
+    pages.report()
+    return out
+
+
+def stellaris_listing(listing):
+    """slug -> (status, theme) from the listing cards. Status is Active, Inactive or Exited."""
+    chunks = listing.split('w-dyn-item')[1:] if 'w-dyn-item' in listing else None
+    if chunks is None:   # no Webflow list markup: cut at each detail link instead
+        hits = [m.start() for m in re.finditer(r'href=["\'](?:https?://(?:www\.)?stellarisvp\.com)?/portfolio/[a-z0-9-]+', listing)]
+        chunks = [listing[a:b] for a, b in zip(hits, hits[1:] + [len(listing)])]
+    out = {}
+    for ch in chunks:
+        m = re.search(r'href=["\'](?:https?://(?:www\.)?stellarisvp\.com)?/portfolio/([a-z0-9-]+)', ch)
+        st = re.search(r'>\s*(Active|Inactive|Exited)\s*<', ch)
+        if not m or m.group(1) in out: continue
+        th = re.search(r'\bTHEME\s+(.+?)\s+ENTRY STAGE\b', ' '.join(segments(ch)), re.I)
+        out[m.group(1)] = (st.group(1) if st else '', clean(th.group(1)) if th else '')
+    return out
+
+
+def parse_stellaris_detail(page):
+    """{name, website, people, year, linkedin_url, status} from /portfolio/<slug>. Emails and mailto: links are removed first."""
+    page = no_emails(page)
+    f = re.search(FOUNDERS_HEAD, page)
+    head = page[:f.start()] if f else page
+    links = [(h, t, a) for h, t, _, _, a, _ in anchors(head) if re.match(r'https?://', h) and own_site(h)]
+    pick = next((x for x in links if re.search(r'website|visit', x[1] + ' ' + x[2], re.I) or domain_of(x[1]) == domain_of(x[0])), None)
+    website = norm_url((pick or (links[0] if links else ('',)))[0])
+    h1 = re.search(r'<h1\b[^>]*>(.*?)</h1>', page, re.S | re.I)
+    name = clean(TAGS.sub(' ', h1.group(1))) if h1 else ''
+    text = ' '.join(segments(page))
+    yr = re.search(r'Partnered\D{0,20}((?:19|20)\d\d)', text, re.I)
+    li = next((h for h, *_ in anchors(page) if re.search(r'linkedin\.com/company/(?!stellaris)[^/?#]+', h, re.I)), '')
+    st = re.search(r'>\s*(Active|Inactive|Exited)\s*<', page)
+    return {'name': name, 'website': website, 'year': int(yr.group(1)) if yr and 2000 <= int(yr.group(1)) <= NOW_YEAR else None,
+            'people': founders_between(page, FOUNDERS_HEAD, r'Stellaris\s+Team|Partnered|Co-?investors?'),
+            'linkedin_url': li.split('?')[0], 'status': st.group(1) if st else ''}
+
+
+def collect_stellaris(refresh):
+    base = SOURCES['stellaris']['page']
+    listing = cached_text(os.path.join(SRC, 'stellaris', 'portfolio.html'), base, refresh, pause=INDIA_PAUSE)
+    sm = cached_text(os.path.join(SRC, 'stellaris', 'sitemap.xml'), 'https://www.stellarisvp.com/sitemap.xml', refresh, pause=INDIA_PAUSE)
+    cards = stellaris_listing(listing)
+    pages, out, seen = DetailPages('stellaris'), [], set()
+    for url, slug in re.findall(r'<loc>\s*(https?://[^<]*?/portfolio/([a-z0-9-]+))/?\s*</loc>', sm):
+        if slug in seen: continue
+        seen.add(slug)
+        status, theme = cards.get(slug, ('', ''))
+        if status and status != 'Active': continue       # Inactive or Exited: no row, no request
+        page = pages.get(slug, url)
+        if not page: continue
+        d = parse_stellaris_detail(page)
+        if (status or d['status']) != 'Active': continue  # status unknown on both pages: not taken
+        name = d['name'] or slug.replace('-', ' ').title()
+        out.append(india_candidate('stellaris', name, d['website'], theme.split(',')[0].strip(), url, d['people'], d['year'],
+                                   d['linkedin_url'] if '/company/' in d['linkedin_url'] else ''))
+    pages.report()
+    return out
+
+
+PRIME_NAME_KEYS = ('name', 'title', 'companyName', 'company_name')
+PRIME_SITE_KEYS = ('website', 'websiteUrl', 'website_url', 'companyUrl', 'company_url', 'url', 'link', 'externalUrl', 'href')
+
+
+def founder_names(v):
+    """Founder names from a string ('Nipun Kohli, Srinivasan R'), a list of strings, or a list of {name: ...}."""
+    if isinstance(v, str): return [clean(x) for x in re.split(r',|&|\band\b|\n', v) if clean(x)]
+    if isinstance(v, list): return [n for x in v for n in founder_names(x.get('name', '') if isinstance(x, dict) else x)]
+    return []
+
+
+def prime_companies(listing):
+    """[(name, website, founder names)] from the portfolio page: the Next.js payload first, else one card per heading."""
+    found = {}
+
+    def add(name, site, founders):
+        name, d = clean(name), domain_of(site)
+        if name and len(name) <= 60 and d and own_site(site) and d not in found: found[d] = (name, norm_url(site), founders)
+
+    def walk(o):
+        if isinstance(o, dict):
+            name = next((o[k] for k in PRIME_NAME_KEYS if isinstance(o.get(k), str) and o[k].strip()), '')
+            site = next((o[k] for k in PRIME_SITE_KEYS if isinstance(o.get(k), str) and re.match(r'(https?://|www\.)', o[k].strip())), '')
+            if name and site: add(name, site, founder_names(o.get('founders') or o.get('founder') or o.get('founderNames') or ''))
+            for v in o.values(): walk(v)
+        elif isinstance(o, list):
+            for v in o: walk(v)
+
+    for line in next_payload(listing).split('\n'):
+        m = re.match(r'\s*[0-9a-f]+:(.*)$', line, re.S)
+        if not m or m.group(1)[:1] not in ('[', '{'): continue
+        try: walk(json.loads(m.group(1)))
+        except ValueError: continue
+    if not found:   # HTML fallback: each heading starts a card; its first outside link is the website
+        heads = list(re.finditer(r'<h[2-4]\b[^>]*>(.*?)</h[2-4]>', listing, re.S | re.I))
+        for i, h in enumerate(heads):
+            card = listing[h.end():heads[i + 1].start() if i + 1 < len(heads) else len(listing)]
+            site = next((x[0] for x in anchors(card) if re.match(r'https?://', x[0]) and own_site(x[0])), '')
+            segs = segments(card)
+            fi = next((j for j, s in enumerate(segs) if re.match(r'Founders?\b', s, re.I)), None)
+            names = []
+            if fi is not None:
+                rest = re.sub(r'^Founders?\s*:?\s*', '', segs[fi], flags=re.I)
+                names = founder_names(rest or (segs[fi + 1] if fi + 1 < len(segs) else ''))
+            add(TAGS.sub(' ', h.group(1)), site, names)
+    return list(found.values())
+
+
+def collect_prime(refresh):
+    base = SOURCES['prime']['page']
+    listing = no_emails(cached_text(os.path.join(SRC, 'prime', 'portfolio.html'), base, refresh, pause=INDIA_PAUSE))
+    return [india_candidate('prime', name, site, '', base, people_from_names(founders)) for name, site, founders in prime_companies(listing)]
+
+
 HN_API = 'https://hn.algolia.com/api/v1/search_by_date'
 LAUNCH_RE = re.compile(r'^Launch HN:\s*(.+?)\s*\((YC\s+)?([WSFX])\s?(\d{2})\)\s*[-–—:]*\s*(.*)$', re.I)
 SHOW_RE = re.compile(r'^Show HN:\s*([A-Z0-9][\w.+\'’-]*(?: [A-Z0-9][\w.+\'’-]*){0,2})\s+[-–—:]+\s+(.{15,})$')
@@ -364,19 +859,40 @@ def collect_hn(refresh):
 
 
 COLLECTORS = {'500-global': collect_500, 'antler': collect_antler, 'a16z': collect_a16z, 'sequoia': collect_sequoia, 'accel': collect_accel,
-              'hacker-news': collect_hn}
+              'hacker-news': collect_hn, 'elevation': collect_elevation, 'stellaris': collect_stellaris, 'prime': collect_prime}
+# 'yc-india' (collect_yc_india) is off: YC's Terms of Use forbid scraping, see SKIPPED
 
 
 def collect(only, refresh=False):
+    """Run each collector; one source failing never stops the others. cache/source_status.json records per source
+    {state: ok|blocked|empty|failed, status, url, listed, at}: a blocked source is never reported as '0 companies'."""
     allc = load(os.path.join(CACHE, 'multi_candidates.json')) or {}
+    status = load(os.path.join(CACHE, 'source_status.json')) or {}
     for slug, fn in COLLECTORS.items():
         if only and slug not in only: continue
+        at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
+        page = SOURCES.get(slug, {}).get('page', '')
+        kept = len(allc.get(slug) or [])
+        _detail_blocks.pop(slug, None)
         try:
-            allc[slug] = fn(refresh)
-            print(f'[collect] {slug}: {len(allc[slug])} listed', flush=True)
+            rows = fn(refresh)
+            if rows:
+                allc[slug] = rows
+                st = {'state': 'ok', 'status': None, 'url': page, 'listed': len(rows), 'at': at}
+                b = _detail_blocks.pop(slug, None)
+                if b: st.update(state='blocked', status=b.status, url=b.url, note='detail pages blocked; rows parsed before the block are kept')
+            else:      # an empty list is not "0 companies": the earlier rows stay until the source answers again
+                st = {'state': 'empty', 'status': None, 'url': page, 'listed': 0, 'at': at, 'kept': kept}
+            print(f'[collect] {slug}: {st["state"]}, {len(rows)} listed', flush=True)
+        except Blocked as e:
+            st = {'state': 'blocked', 'status': e.status, 'url': e.url, 'listed': 0, 'at': at, 'kept': kept}
+            print(f'[collect] {slug}: BLOCKED ({e.status}) at {e.url} (keeping {kept} cached)', flush=True)
         except Exception as e:   # one source being down never stops the others
-            print(f'[collect] {slug}: FAILED {type(e).__name__} {e} (keeping {len(allc.get(slug) or [])} cached)', flush=True)
+            st = {'state': 'failed', 'status': type(e).__name__, 'url': page, 'listed': 0, 'at': at, 'kept': kept, 'error': str(e)[:200]}
+            print(f'[collect] {slug}: FAILED {type(e).__name__} {e} (keeping {kept} cached)', flush=True)
+        status[slug] = st
     save(os.path.join(CACHE, 'multi_candidates.json'), allc)
+    save(os.path.join(CACHE, 'source_status.json'), status)
     return allc
 
 
@@ -571,6 +1087,60 @@ def us_evidence(pages, host):
     return {'us': True, 'city': best[0], 'why': best[1]}
 
 
+IN_CITIES = {'bengaluru': 'Bengaluru', 'bangalore': 'Bengaluru', 'mumbai': 'Mumbai', 'bombay': 'Mumbai', 'navi mumbai': 'Navi Mumbai',
+             'new delhi': 'New Delhi', 'delhi': 'New Delhi', 'gurugram': 'Gurugram', 'gurgaon': 'Gurugram', 'noida': 'Noida',
+             'greater noida': 'Greater Noida', 'faridabad': 'Faridabad', 'ghaziabad': 'Ghaziabad', 'hyderabad': 'Hyderabad',
+             'secunderabad': 'Hyderabad', 'chennai': 'Chennai', 'madras': 'Chennai', 'pune': 'Pune', 'kolkata': 'Kolkata',
+             'calcutta': 'Kolkata', 'ahmedabad': 'Ahmedabad', 'gandhinagar': 'Gandhinagar', 'jaipur': 'Jaipur', 'kochi': 'Kochi',
+             'cochin': 'Kochi', 'chandigarh': 'Chandigarh', 'mohali': 'Mohali', 'indore': 'Indore', 'coimbatore': 'Coimbatore',
+             'thane': 'Thane', 'surat': 'Surat', 'vadodara': 'Vadodara', 'lucknow': 'Lucknow', 'bhubaneswar': 'Bhubaneswar',
+             'thiruvananthapuram': 'Thiruvananthapuram', 'trivandrum': 'Thiruvananthapuram', 'nagpur': 'Nagpur', 'mysuru': 'Mysuru',
+             'mysore': 'Mysuru', 'visakhapatnam': 'Visakhapatnam', 'bhopal': 'Bhopal', 'mangaluru': 'Mangaluru', 'mangalore': 'Mangaluru'}
+IN_CITY = re.compile(r'\b(%s)\b' % '|'.join(sorted((re.escape(c) for c in IN_CITIES), key=len, reverse=True)), re.I)
+IN_PIN = re.compile(r'(?<![\d+\-])\b[1-9]\d{5}\b(?![\d\-])')
+IN_COUNTRY = {'IN', 'IND', 'INDIA'}
+IN_ENTITY = re.compile(r'(?:©|&copy;|\(c\)|copyright)[^<\n|]{0,120}?\b(Private\s+Limited|Pvt\.?\s*Ltd\.?)', re.I)
+
+
+def in_city(s):
+    """'Bangalore' -> 'Bengaluru', 'Gurgaon' -> 'Gurugram', 'Delhi' -> 'New Delhi'; '' when the place is not a known Indian city."""
+    m = IN_CITY.fullmatch(clean(s)) if s else None
+    return IN_CITIES[m.group(1).lower()] if m else ''
+
+
+def india_evidence(pages, host):
+    """Does the company's own site state an address in India? Returns {india: True|None, city, why}. Any one counts:
+    (a) schema.org addressCountry IN/India (city = addressLocality); (b) a known Indian city within 80 characters of a 6-digit PIN;
+    (c) 'Private Limited' / 'Pvt. Ltd.' in a copyright line, together with a .in host or a known Indian city on the same page.
+    A city alone or a domain alone is never evidence. Phone numbers are never read and nothing but the city is kept."""
+    host = (host or '').lower()
+    found = []          # (rank, city, why): a stated address beats a city seen near the copyright
+    for url, raw in pages:
+        path = urllib.parse.urlparse(url).path or '/'
+        for m in re.finditer(r'"addressCountry"\s*:\s*(?:\{[^}]*?"name"\s*:\s*)?"([^"]{2,40})"', raw or ''):
+            if m.group(1).strip().upper() not in IN_COUNTRY: continue
+            win = raw[max(0, m.start() - 600):m.end() + 600]
+            lo = re.search(r'"addressLocality"\s*:\s*"([^"]{2,40})"', win)
+            loc = clean(lo.group(1)) if lo else ''
+            city = in_city(loc) or (loc if re.fullmatch(r"[A-Z][A-Za-z.' -]{2,30}", loc) else '')
+            found.append((0, city, 'schema.org addressCountry ' + m.group(1).strip()))
+        text = re.sub(r'\s+', ' ', html.unescape(TAGS.sub(' ', raw or '')))
+        for m in IN_CITY.finditer(text):
+            near = text[max(0, m.start() - 80):m.end() + 80]
+            if IN_PIN.search(near):
+                found.append((1, IN_CITIES[m.group(1).lower()], f'Indian address with a PIN code on {path}'))
+                break
+        e = IN_ENTITY.search(html.unescape(raw or ''))
+        if e:
+            c = IN_CITY.search(text)
+            if host.endswith('.in') or c:
+                found.append((2, IN_CITIES[c.group(1).lower()] if c else '',
+                              f'copyright names a {clean(e.group(1))} entity' + (' on a .in domain' if host.endswith('.in') else ' with an Indian city')))
+    if not found: return {'india': None, 'city': '', 'why': ''}
+    found.sort(key=lambda x: x[0])
+    return {'india': True, 'city': next((f[1] for f in found if f[1]), ''), 'why': found[0][2]}
+
+
 SPAM = re.compile(r'casino|pokies|\bslot\s?(gacor|777|online|qris)|\btogel\b|\bjudi\b|sportsbook|jackpot|\bbandar\b|\bporn|escorts?\b|viagra|xoilac|b[oó]ng đ[aá]', re.I)
 
 
@@ -622,11 +1192,13 @@ def canon_location(loc):
     return city if n.get(city, 0) > max(n.get(loc, 0), 2) else loc
 
 
-def facts_job(key, website, need_us):
-    """site_scan + deep_job (existing enrichment) and a facts pass over the same pages. One company = one worker, pages fetched once."""
+def facts_job(key, website, need_us, need_in=False):
+    """site_scan + deep_job (existing enrichment) and a facts pass over the same pages. One company = one worker, pages fetched once.
+    need_in: also look for an Indian address (india_evidence). A cached fact without it is redone, unless the site is dead or US."""
     path = os.path.join(FACTS, key + '.json')
     old = load(path)
-    if old is not None and (old.get('us_checked') or not need_us):
+    in_done = old is not None and (old.get('in_checked') or not need_in or not old.get('ok') or old.get('us') is True)
+    if old is not None and (old.get('us_checked') or not need_us) and in_done:
         if 'names' in old or not old.get('ok'): return 'cached'
         try:   # written before the identity check existed: one homepage request adds it
             final, text = _real_fetch(website if re.match(r'https?://', website) else 'https://' + website, timeout=14, strict=False)
@@ -642,7 +1214,7 @@ def facts_job(key, website, need_us):
         if s is None:
             s = scrape.site_scan(website); save(spath, s)
         res = {'ok': bool(s.get('ok')), 'error': s.get('error', ''), 'description': '', 'title': '', 'parked': False, 'us': None, 'city': '', 'why': '',
-               'us_checked': bool(need_us)}
+               'us_checked': bool(need_us), 'india': None, 'india_city': '', 'india_why': '', 'in_checked': bool(need_in)}
         if not s.get('ok'):
             save(path, res); return 'dead'
         host = s.get('host') or domain_of(website)
@@ -666,7 +1238,10 @@ def facts_job(key, website, need_us):
         res['title'] = clean(TAGS.sub(' ', t.group(1)))[:160] if t else ''
         res['parked'] = bool(PARKED.search(text[:60000])) or len(TAGS.sub(' ', text).strip()) < 40 and 'script' not in text.lower()
         ev = us_evidence(pages, host)
-        if need_us and ev['us'] is None and not ev['why']:
+        iev = india_evidence(pages, host) if need_in else {'india': None, 'city': '', 'why': ''}
+        us_open = lambda: need_us and ev['us'] is None and not ev['why']
+        in_open = lambda: need_in and iev['india'] is None and ev['us'] is not True
+        if us_open() or in_open():
             base = home[0] or url
             for p in ['/about', '/contact', '/privacy', '/privacy-policy', '/terms', '/company', '/about-us', '/legal/privacy', '/terms-of-service']:
                 full = urllib.parse.urljoin(base, p)
@@ -674,9 +1249,15 @@ def facts_job(key, website, need_us):
                 try: f2, t2 = scrape.fetch(full, timeout=10, limit=800_000, strict=False)
                 except Exception: continue
                 if urllib.parse.urlparse(f2).path.rstrip('/') == '': continue
-                ev = us_evidence([(f2, t2)], host)
-                if ev['us'] is not None or ev['why']: break
+                if us_open():
+                    e2 = us_evidence([(f2, t2)], host)
+                    if e2['us'] is not None or e2['why']: ev = e2
+                if in_open():
+                    i2 = india_evidence([(f2, t2)], host)
+                    if i2['india']: iev = i2
+                if not us_open() and not in_open(): break
         res.update(ev)
+        res.update({'india': iev['india'], 'india_city': iev['city'], 'india_why': iev['why']})
         save(path, res)
         return 'ok'
     finally:
@@ -699,12 +1280,17 @@ def to_enrich(allc, only, domains):
     jobs = {}
     for slug, cands in allc.items():
         if only and slug not in only: continue
+        if slug not in COLLECTORS: continue   # a source switched off (yc-india) left in the candidates cache: no site visits
         for c in cands:
             d = domain_of(c.get('website'))
             if not d or c.get('badge_only') or not c.get('active') or c.get('country') == 'other' or d in domains or PLATFORM.search(d): continue
             key = site_key(c['website'])
-            need_us = c.get('country') != 'US'
-            if key not in jobs or (need_us and not jobs[key][2]): jobs[key] = (key, c['website'], need_us)
+            need_us = c.get('country') not in ('US', 'IN')     # the source already states the country
+            need_in = c.get('country') == 'IN' or slug in INDIA_SITE_SOURCES   # city for Indian rows; India for the India portfolios
+            if key in jobs:   # listed by several sources: one visit answers every question asked
+                _, site, u, i = jobs[key]
+                jobs[key] = (key, site, u or need_us, i or need_in)
+            else: jobs[key] = (key, c['website'], need_us, need_in)
     return list(jobs.values())
 
 
@@ -716,24 +1302,26 @@ def enrich(allc, only, limit=None):
 
 
 # ---------------------------------------------------------------- stage 3: build
-SOURCE_ORDER = ['a16z', 'sequoia', 'accel', '500-global', 'antler', 'hacker-news']   # which listing names the row when several list it
+SOURCE_ORDER = ['yc-india', 'a16z', 'sequoia', 'elevation', 'stellaris', 'prime', 'accel', '500-global', 'antler', 'hacker-news']   # which listing names the row when several list it
+COUNTRY_NAME = {'US': 'United States', 'IN': 'India'}     # the row's `country`, read by ingest_catalog (migration 202611260001)
 
 
 def build(allc, only):
     domains, slugs = catalog()
     taken = set(slugs)
     rows, by_domain, badge_adds = [], {}, {}
-    stats = {}
+    stats, row_src = {}, {}
     S = lambda slug: stats.setdefault(slug, {'listed': 0, 'no_website': 0, 'not_us': 0, 'not_operating': 0, 'us_and_active': 0, 'in_catalog': 0,
                                              'location_unknown': 0, 'site_down': 0, 'site_parked': 0, 'site_not_the_company': 0, 'no_description': 0,
-                                             'duplicate_of_other_source': 0, 'new': 0})
-    order = [s for s in SOURCE_ORDER if s in allc] + [s for s in allc if s not in SOURCE_ORDER]
+                                             'duplicate_of_other_source': 0, 'new': 0, 'india_from_site': 0})
+    # only sources that are still collected: a stale candidates cache cannot bring back a source that was switched off
+    order = [s for s in SOURCE_ORDER if s in allc and s in COLLECTORS] + [s for s in allc if s not in SOURCE_ORDER and s in COLLECTORS]
     for slug in order:
         if only and slug not in only: continue
         meta = SOURCES[slug]
         for c in allc[slug]:
             st = S(slug); st['listed'] += 1
-            badge = {'label': c['badge'], 'source': slug}
+            badge = {'label': c['badge'], 'source': c.get('badge_source') or slug}
             d = domain_of(c.get('website'))
             if c.get('badge_only'):
                 # Launch HN: only ever a badge on a company that is already listed.
@@ -757,7 +1345,12 @@ def build(allc, only):
             key = site_key(c['website'])
             f = load(os.path.join(FACTS, key + '.json'))
             if f is None: st['site_down'] += 1; continue   # not visited yet (run the enrich stage)
-            if c.get('country') != 'US':
+            cc, from_site = c.get('country') or '', False
+            if not cc and f.get('india') is True and f.get('us') is not True:
+                cc, from_site = 'IN', True                 # no country from the source; the company's own site states India
+            if cc == 'IN':
+                pass                                       # India is stated: no US check; the site gates below still apply
+            elif cc != 'US':
                 if f.get('us') is False: st['not_us'] += 1; continue
                 if f.get('us') is True and AGENT.match(f.get('city') or '') and 'US address' in f.get('why', ''):
                     st['location_unknown'] += 1; continue      # only a registered-agent / virtual-mailbox address
@@ -804,20 +1397,29 @@ def build(allc, only):
             people = []
             for p in c.get('people') or []:
                 pl = p.get('linkedin_url') or ''
-                people.append({**p, 'linkedin_url': pl if re.match(r'https?://([a-z0-9-]+\.)*linkedin\.com/in/[^/?#]+', pl, re.I) else ''})
+                people.append({**{k: v for k, v in p.items() if k != 'email'},   # people never carry an email
+                               'linkedin_url': pl if re.match(r'https?://([a-z0-9-]+\.)*linkedin\.com/in/[^/?#]+', pl, re.I) else ''})
             notes = [meta['name'] + (f" {c['year']}" if c.get('year') else ''), c['source_url']]
-            if c.get('country') != 'US': notes.append('US check: ' + f.get('why', ''))
+            if from_site: notes.append('India check: ' + f.get('india_why', ''))
+            elif cc not in ('US', 'IN'): notes.append('US check: ' + f.get('why', ''))
             row = {'slug': cand, 'domain': d, 'name': site_casing(c['name'], f)[:200], 'website': norm_url(c['website']),
-                   'description': desc[:600], 'location': canon_location(f.get('city') or ''), 'sector': c.get('sector') or '', 'industry': c.get('industry') or '',
-                   'logo_url': dp.get('logo_url') or '', 'careers_url': careers, 'contact_url': strict_contact(s.get('contact_url')) or strict_contact(dp.get('contact_url')),
+                   'description': desc[:600],
+                   # an Indian row's city comes from its source, else from the site's Indian address; never from the US-address check
+                   'location': (clean(c.get('location')) or clean(f.get('india_city'))) if cc == 'IN' else canon_location(f.get('city') or ''),
+                   'sector': c.get('sector') or '', 'industry': c.get('industry') or '',
+                   'logo_url': c.get('logo_url') or dp.get('logo_url') or '', 'careers_url': careers or c.get('careers_url') or '',
+                   'contact_url': strict_contact(s.get('contact_url')) or strict_contact(dp.get('contact_url')),
                    'linkedin_url': li.split('?')[0], 'contact_email': general, 'hiring_email': hiring,
                    'source': meta['name'], 'source_url': c['source_url'], 'badges': [badge], 'batch_year': c.get('year'),
-                   'notes': ' · '.join(x for x in notes if x), 'people': people}
+                   'notes': ' · '.join(x for x in notes if x), 'people': people,
+                   'country': COUNTRY_NAME['IN' if cc == 'IN' else 'US']}
             by_domain[d] = row
+            row_src[id(row)] = slug
             rows.append(row)
             st['new'] += 1
+            if from_site: st['india_from_site'] += 1
     for slug in stats:
-        mine = [r for r in rows if r['badges'][0]['source'] == slug]
+        mine = [r for r in rows if row_src.get(id(r)) == slug]
         cov = lambda k: sum(1 for r in mine if r.get(k))
         stats[slug]['coverage_of_new'] = {'description': cov('description'), 'city': cov('location'), 'leaders': cov('people'), 'careers': cov('careers_url'),
                                          'contact': cov('contact_url'), 'email': sum(1 for r in mine if r['contact_email'] or r['hiring_email']),
@@ -825,7 +1427,8 @@ def build(allc, only):
     adds = list(badge_adds.values())
     summary = {'generated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
                'new_companies': len(rows), 'badge_adds': len(adds), 'catalog_domains_known': len(domains), 'catalog_slugs_known': len(slugs),
-               'per_source': stats, 'sources': {k: {**v} for k, v in SOURCES.items()}, 'skipped_sources': SKIPPED}
+               'per_source': stats, 'sources': {k: {**v} for k, v in SOURCES.items()}, 'skipped_sources': SKIPPED,
+               'source_status': load(os.path.join(CACHE, 'source_status.json')) or {}}
     save(os.path.join(OUT, 'companies_multi.json'), {'summary': summary, 'rows': rows + adds})
     print(json.dumps({k: v for k, v in summary.items() if k not in ('sources', 'skipped_sources')}, indent=1))
     return summary
