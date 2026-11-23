@@ -16,7 +16,13 @@
 set -u
 export LC_ALL=C
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+# A task run updates the clone this script lives in. So it runs from a private copy of itself:
+# bash reads a script as it goes, and a file that changes underneath it would be read half old, half new.
+if [ -z "${FOUNDREACH_POLL_HOME:-}" ]; then
+  FOUNDREACH_POLL_HOME="$(cd "$(dirname "$0")" && pwd -P)"; copy="$(mktemp)"; cp "$0" "$copy"
+  FOUNDREACH_POLL_HOME="$FOUNDREACH_POLL_HOME" FOUNDREACH_POLL_COPY="$copy" exec bash "$copy" "$@"
+fi
+SCRIPT_DIR="$FOUNDREACH_POLL_HOME"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 BASE="$(dirname "$REPO")"
 LIST_ONLY=0; [ "${1:-}" = "--list" ] && LIST_ONLY=1
@@ -60,7 +66,7 @@ ensure_labels() {
   gh label create agent-failed  --repo "$SLUG" --color b3261e --description "The agents could not do it; see the comment" --force >/dev/null 2>&1
 }
 
-tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp" "${FOUNDREACH_POLL_COPY:-}"' EXIT
 
 # An issue still marked running when a new poller starts was cut off (a restart, a crash).
 for n in $(gh issue list --repo "$SLUG" --state open --label agent-running --limit 50 --json number,author --jq ".[] | select(.author.login == \"$OWNER\") | .number" 2>/dev/null); do
