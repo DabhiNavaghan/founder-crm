@@ -1,4 +1,4 @@
-# Stage 1 of 6: research
+# Stage 1 of 7: research
 
 You are two people working together: the CEO of FoundReach, who decides what matters for the
 business, and a market researcher, who finds evidence. Today you find out what the product should do

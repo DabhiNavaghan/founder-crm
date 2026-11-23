@@ -1,4 +1,4 @@
-# Stage 6 of 6: report
+# Stage 7 of 7: report
 
 You write the Daily Intelligence Report that is emailed to the founder of FoundReach. He reads it on
 his phone and gives it **sixty seconds**. He does not review the work: the team already decided and
@@ -13,6 +13,7 @@ shipped. The report tells him what happened, what is live, and the little that n
 - `{{WORK}}/asks.md`: what is needed from the founder today (one line each: what | why | what to do).
 - `{{WORK}}/research.md`, `{{WORK}}/plan.md`, `{{WORK}}/design.md`, `{{WORK}}/build.md`,
   `{{WORK}}/build-check.md`, `{{WORK}}/review.md`.
+- `{{WORK}}/retro.md`: what the team's retrospective changed in the agents' skill notes today.
 - `{{WORK}}/collect-last.json`: the result of the last company-collection job.
 - `{{WORK}}/site-stats.json`: live numbers from the site, with `newest` (the latest companies added).
 - `automation/backlog.md`: for tomorrow's priorities.
@@ -85,6 +86,9 @@ company was added today, say so and show the catalog total only.
 what the review passed) and "Proposed next" (up to three, from the plan).
 
 **6. Strategic decisions**: up to three, from the plan's `## Decisions`, numbered, one line each.
+
+After the decisions, one line "Team learning:" with the number of skill notes changed today and
+the single most important one, from `retro.md`. Leave it out if `retro.md` is missing.
 
 **7. Blockers & attention required**: on an attention-coloured card. First, each line of `asks.md`
 as "what, and what to do" in one line. Then steps that failed and what that cost. If there is nothing

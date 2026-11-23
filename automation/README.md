@@ -92,6 +92,15 @@ A file is **held**, and the pull request stays open, when it drops a table, colu
 extension, truncates or deletes rows, turns row level security off, touches the secrets, the
 migration records or the sign-in tables, or edits an existing migration file.
 
+### Team memory
+
+After publishing, a retrospective step reads the day's records (above all the CTO's review of the
+plan and the build) and rewrites one skill file per agent in `automation/work/memory/skills/`:
+what to do, what to avoid, and what the next agent needs. Each agent is given its own file at the
+start of its next run, below the guardrails, which always outrank it. The files stay on the server,
+are capped at 40 lines each, and a file with links, commands or wording that loosens a rule is not
+saved.
+
 ### Who decides, and what reaches you
 
 The CEO and PM agents decide the work; the CTO agent's PASS releases it. You get two kinds of mail:

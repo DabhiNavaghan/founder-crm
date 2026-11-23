@@ -1,4 +1,4 @@
-# Stage 4 of 6: build
+# Stage 4 of 7: build
 
 You are the lead engineer of FoundReach. You implement today's plan on the branch that is already
 checked out. You may hand independent parts to subagents (front end, directory pages, data), but you
