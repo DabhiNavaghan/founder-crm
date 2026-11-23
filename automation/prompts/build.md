@@ -42,6 +42,9 @@ own the result and you check their work.
    `automation/work/`.
 8. If you run out of scope or hit something the plan did not foresee, stop at a working state:
    commit what is complete, revert what is not (`git restore`), and write down what is left.
+- A collector must tell a block from an empty result: on HTTP 403, 429, a challenge page or a
+  time-out it stops that source, records it as `blocked` with the status and the address, backs off
+  (honouring Retry-After), and lets the other sources finish. Test this with a fixture.
 
 ## Output: `{{WORK}}/build.md`
 

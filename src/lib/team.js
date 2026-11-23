@@ -16,7 +16,7 @@ export const COLUMNS = [
   { id: 'waiting', label: 'Waiting' },
   { id: 'working', label: 'Working' },
   { id: 'review', label: 'In review' },
-  { id: 'shipped', label: 'Shipped' },
+  { id: 'shipped', label: 'Released' },
   { id: 'attention', label: 'Needs attention' },
 ];
 const FAILED = new Set(['failed', 'timeout']);
@@ -269,3 +269,43 @@ export function runDetail(run) {
     asks: str(rm.asks).trim(),
   };
 }
+
+// The steps of a run in the order the team works, for the progress strip.
+export const PIPELINE = ['research', 'plan', 'design', 'build', 'review', 'publish', 'retro', 'report'];
+export function progress(run) {
+  const steps = stepTimeline(events(run));
+  return PIPELINE.map(stage => {
+    const step = [...steps].reverse().find(s => s.stage === stage);
+    const state = !step ? 'todo' : step.status === 'running' ? 'running' : FAILED.has(step.status) ? 'failed' : step.status === 'skipped' ? 'skipped' : 'done';
+    return { stage, state, agents: agentForStage(stage), seconds: step ? step.seconds : null };
+  });
+}
+
+// Time, turns, tokens and cost per group of agents over the last `days` days. Only closed steps count.
+export const USAGE_GROUPS = [
+  { id: 'research', name: 'Market Research', stages: ['research'] },
+  { id: 'plan', name: 'CEO and PM', stages: ['plan'] },
+  { id: 'design', name: 'Product Designer', stages: ['design'] },
+  { id: 'eng', name: 'Engineering', stages: ['build'] },
+  { id: 'cto', name: 'CTO', stages: ['review'] },
+  { id: 'report', name: 'Retro and report', stages: ['retro', 'report'] },
+];
+export function usage(runs, nowMs, days = 7) {
+  const since = nowMs - days * 24 * 60 * 60 * 1000;
+  const rows = USAGE_GROUPS.map(g => ({ id: g.id, name: g.name, seconds: 0, turns: 0, tokens: 0, cost: 0, steps: 0 }));
+  for (const run of Array.isArray(runs) ? runs : []) {
+    for (const e of events(run)) {
+      const i = USAGE_GROUPS.findIndex(g => g.stages.includes(e.stage));
+      if (i === -1 || OPENING.has(e.status) || (ms(e.at) ?? 0) < since) continue;
+      const m = meta(e);
+      rows[i].seconds += num(m.seconds) ?? 0; rows[i].turns += num(m.turns) ?? 0;
+      rows[i].tokens += num(m.tokens) ?? 0; rows[i].cost += num(m.cost_usd) ?? 0; rows[i].steps += 1;
+    }
+  }
+  const max = Math.max(1, ...rows.map(r => r.seconds));
+  return { rows: rows.map(r => ({ ...r, share: r.seconds / max })), total: rows.reduce((a, r) => ({ seconds: a.seconds + r.seconds, cost: a.cost + r.cost, tokens: a.tokens + r.tokens }), { seconds: 0, cost: 0, tokens: 0 }) };
+}
+
+// Sky of the scene from the viewer's clock: day, dusk (also dawn) or night.
+export const skyFor = hour => (hour >= 7 && hour < 17 ? 'day' : (hour >= 17 && hour < 19) || (hour >= 5 && hour < 7) ? 'dusk' : 'night');
+export const clock = s => { const n = Math.max(0, Math.floor(num(s) ?? 0)); const h = Math.floor(n / 3600), m = Math.floor((n % 3600) / 60), x = n % 60; return (h ? h + ':' + String(m).padStart(2, '0') : String(m).padStart(2, '0')) + ':' + String(x).padStart(2, '0'); };
