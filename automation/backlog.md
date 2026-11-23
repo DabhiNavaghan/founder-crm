@@ -23,8 +23,26 @@ Never delete an item. Finished items move to "Done" at the bottom as one line ea
 - Why: founder task #2; YC and Antler are cleared (research 2026-11-23); India rows are dropped today
   (`multi.py:704,748`) and would be stored as US (`202611240001_multi_source.sql:240`)
 - Size: M, migration `202611260001_country_ingest.sql`
-- Status: in progress (2026-11-23)
-- Notes: live India count = the total on `/companies?country=india`; report it every run
+- Status: in progress (2026-11-23), run 2: fix the city lost in `build()` (CTO problem 1) and turn yc-india off
+- Notes: live India count = the total on `/companies?country=india`; report it every run. Run 2 decision:
+  YC terms forbid scraping (research 2026-11-23, run 2), so slice 1 ships with Antler India only
+
+### B-031 Pause YC page fetching in the US pipeline unless the founder clears YC (founder task #2)
+- Why: YC Terms of Use forbid "data mining, robots, scraping" (https://www.ycombinator.com/legal). `api/cron/refresh.js:36`
+  and `scraper/scrape.py:77-95` fetch `ycombinator.com/companies/<slug>`. Asked in requests.md 2026-11-23
+- Size: S, no migration. Existing US rows stay live; only new fetches stop. Skip if the founder sends permission first
+- Status: open
+
+### B-032 City for Antler India rows from the company's own site (founder task #2)
+- Why: Antler gives only a country (`multi.py:338`), and its detail pages are disallowed, so Antler India rows have no city.
+  Use schema.org `addressLocality` only when `addressCountry` is India, next to `us_evidence()` (`multi.py:620-630`)
+- Size: S–M, no migration
+- Status: open
+
+### B-033 Fix the "United States" entry in the city list
+- Why: `/companies` City filter lists "United States (1)" (research 2026-11-23, run 2); it will mix with Indian cities
+- Size: S, an update-only migration like B-028
+- Status: open
 
 ### B-024 India slice 2: Elevation and Stellaris collectors, Accel India (founder task #2)
 - Why: both list founders with `/in/` LinkedIn; terms have no clause (research 2026-11-23). Accel has no
@@ -47,16 +65,13 @@ Never delete an item. Finished items move to "Done" at the bottom as one line ea
 - Why: visitors should see India from the nav and home page; Indian cities must not merge with US ones
 - Size: M, migration (facet counts)
 - Status: open
+- Notes: add an expression index on `fr_slugify(country)` for `catalog_list_country` (CTO note 2026-11-23)
 
-### B-028 Correct country of existing rows a source states as Indian (founder task #2)
-- Why: a YC/Antler India company already in the catalog (matched on domain) keeps 'United States'
-- Size: S, migration (update on match only when the source states the country)
+### B-028 Correct country and location of existing rows a source states as Indian (founder task #2)
+- Why: a YC/Antler India company already in the catalog (matched on domain) keeps 'United States'; `ingest_catalog`
+  never overwrites a stored field (`coalesce`), so a wrong first city is permanent too (CTO note 2026-11-23)
+- Size: S, migration (update on match only when the source states the country or city)
 - Status: open
-
-### B-029 Peak XV, Kalaari, 3one4, Nexus: not collected
-- Why: their terms forbid scraping or reuse (research 2026-11-23); record in `SKIPPED` in `multi.py`
-- Size: S
-- Status: dropped (terms forbid collection; only written permission would change this)
 
 ### B-001 Go global: countries in the catalog, the pages and the collectors
 - Why: the product direction is a directory for all countries. Today everything is US-only, so most
@@ -64,28 +79,11 @@ Never delete an item. Finished items move to "Done" at the bottom as one line ea
 - Size: L, to be delivered in slices (one per day)
 - Status: open. Slice 1 done (2026-11-23, PR #1: country shown + US-neutral copy). Slices 2, 3, 5 in
   part via B-023 (country ingest, `country` filter on /companies, India collectors)
-- Notes: where the US-only assumption lives today:
-  - `api/_lib/yc.js`: `usCompanies()` keeps only companies whose YC region includes
-    "United States of America"; the daily cron skips non-US pages with reason `not-us`.
-  - `supabase/migrations/*`: `country = 'United States'` defaults and filters in the catalog
-    functions (see `202611230001_public_directory.sql`, `202611230002_directory_fixes.sql`,
-    `202611240001_multi_source.sql`).
-  - Copy that says "US startups" in `api/_lib/render.js`, the landing page under `src/landing/`,
-    the sitemap and meta descriptions.
-  - `scraper/scrape.py` and `scraper/multi.py`: `us_evidence()`, `need_us`, the `not_us` counters.
-  Suggested slices, each complete on its own:
-  1. Show the country on company cards and company pages where it is already known; change copy
-     from "US startups" to wording that stays true as other countries arrive. No migration.
-  2. Migration: make `country` a first-class, indexed column with a country slug; catalog functions
-     accept an optional country filter and return country facets. Code must work before it is applied.
-  3. Country filter in `/companies` (plain GET parameter, works without JavaScript).
-  4. Country pages `/country/:slug` with a threshold (for example at least 10 companies) below
-     which the page is `noindex` and left out of the sitemap; link them from the directory.
-  5. Collectors: stop dropping non-US companies in `api/_lib/yc.js` and the daily cron; keep the
-     country the source states; never guess a country.
-  6. Scraper: replace the US-evidence gate with "country stated by the source or by the company's
-     own site"; keep the row when the country is known, mark it unknown otherwise.
-  7. City pages and sector pages: make them country-aware so two cities with the same name do not merge.
+- Notes: US-only code: `api/_lib/yc.js` `usCompanies()` and the cron's `not-us` skip; `country =
+  'United States'` defaults in the catalog migrations; `us_evidence()`/`need_us` in `scraper/`.
+  Slices: 1 country shown (done); 2 country column, filter and facets (migration); 3 `/companies`
+  country filter; 4 `/country/:slug` pages, noindex under 10 companies; 5 cron keeps the stated country;
+  6 scraper gate "country stated by source or own site"; 7 country-aware city and sector pages.
 
 ### B-013 Careers link on /hiring cards and hiring-only facet counts
 - Why: job seekers must open each company to reach its careers page; /hiring filter counts look
@@ -150,10 +148,7 @@ Never delete an item. Finished items move to "Done" at the bottom as one line ea
 - Why: visitors arrive with different goals; one generic directory page serves none of them well.
 - Size: M per audience
 - Status: open
-- Notes: one landing section or page per audience, each a saved view of the same directory:
-  job seekers (hiring filter, careers links), founders reaching founders (stage and sector),
-  partnerships and sales (sector, size, contact page), investors (batch, source, recency).
-  Research should confirm which audience to serve first.
+- Notes: one saved view per audience: job seekers, founders, partnerships/sales, investors.
 
 ### B-003 Hiring filters and alerts for job seekers
 - Why: "who is hiring" is the most common reason people browse startup lists.
@@ -166,30 +161,25 @@ Never delete an item. Finished items move to "Done" at the bottom as one line ea
 - Why: a reason to come back; turns one visit into a habit.
 - Size: L, split
 - Status: open
-- Notes: signed-in users save a filter set; a later slice notifies them of new matches. Needs a
-  migration and a decision on how email is sent (no new paid service).
+- Notes: save a filter set, later notify new matches; migration; email sending must use no paid service.
 
 ### B-005 Weekly digest email
 - Why: brings people back with new companies in their sector or country.
 - Size: L, split
 - Status: open
-- Notes: depends on B-004 and on a founder decision about the sending service. Opt-in only, with
-  one-click unsubscribe.
+- Notes: depends on B-004 and the sending service; opt-in, one-click unsubscribe.
 
 ### B-006 More sources
 - Why: coverage is the product. Each allowed source adds companies and a badge.
 - Size: M per source
 - Status: open
-- Notes: only sources whose robots.txt and terms allow automated collection. Skipped so far and
-  why: see `SKIPPED` in `scraper/multi.py`. On hold pending the founder's decision: a16z,
-  500 Global. Candidates need a terms check written into the plan before any code.
+- Notes: terms check in the plan before code; skipped: `SKIPPED` in `multi.py`; on hold: a16z, 500 Global.
 
 ### B-007 Company-page freshness: re-verify what we show
 - Why: dead links and closed companies make the whole directory look unreliable.
 - Size: M
 - Status: open
-- Notes: a daily slice of the catalog is re-checked (site alive, careers page still there), with a
-  "last checked" date on the page. Low request rate, cached.
+- Notes: re-check a daily slice (site alive, careers page), show "last checked"; low rate, cached.
 
 ### B-008 Tell the admin when a removal request arrives
 - Why: removal requests must be honoured quickly; today someone has to look in the database.
@@ -201,15 +191,13 @@ Never delete an item. Finished items move to "Done" at the bottom as one line ea
 - Why: `public/privacy/` predates the public directory and the collection of company data.
 - Size: S
 - Status: open
-- Notes: say what is collected, from where, what is never published, and how to ask for removal.
-  The founder should read the final wording before it goes live.
+- Notes: what is collected, from where, what is never published, how to ask for removal.
 
 ### B-010 Sitemap and SEO monitoring
 - Why: the directory lives on search traffic; a broken sitemap or a wave of thin pages goes unnoticed.
 - Size: S
 - Status: open
-- Notes: a test that the sitemap is valid and under the size limit, canonical URLs are consistent,
-  thin pages are `noindex`.
+- Notes: test sitemap validity and size, consistent canonicals, thin pages `noindex`.
 
 ### B-011 Performance budget checks
 - Why: the guardrails set a budget (HTML under 100 KB, no blocking third-party requests); nothing
@@ -222,11 +210,12 @@ Never delete an item. Finished items move to "Done" at the bottom as one line ea
 - Why: the daily run changes this code every day; tests are what make auto-merge safe to turn on.
 - Size: M, ongoing
 - Status: open
-- Notes: start with `api/_lib/render.js` (escaping, no contact data in output, suppressed slugs) and
-  `api/_lib/yc.js` (parsing with fixtures). Tests live in `tests/` and run with `npm test`.
+- Notes: start with `render.js` (escaping, no contact data, suppressed slugs) and `yc.js` fixtures.
 
 ---
 
 ## Done
 
 - B-001 slice 1: show company country, drop US-only copy | done (2026-11-23, PR #1)
+- B-029 Peak XV, Kalaari, 3one4, Nexus | dropped (2026-11-23, their terms forbid scraping or reuse)
+- B-030 Python collector tests in a gate | done (2026-11-23, pipeline commit de0dd31 runs `python3 -m unittest`)
