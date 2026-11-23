@@ -163,7 +163,7 @@ def main():
     date = args.date or os.path.basename(os.path.dirname(os.path.abspath(args.html_file)))
 
     if args.show:
-        msg = build_message(html, date, sender or 'report@localhost', recipients or ['founder@localhost'])
+        msg = build_message(html, date, sender or 'report@localhost', recipients or ['founder@localhost'], args.subject)
         sys.stdout.write(msg.as_string()[:6000] + '\n'); return 0
 
     missing = [n for n, v in (('SMTP_HOST', host), ('REPORT_TO', recipients), ('REPORT_FROM or SMTP_USER', sender)) if not v]
@@ -178,7 +178,7 @@ def main():
     if security == 'none' and host not in ('127.0.0.1', 'localhost', '::1'):
         log('SMTP_SECURITY=none is only allowed for a local test server'); return 2
 
-    msg = build_message(html, date, sender, recipients)
+    msg = build_message(html, date, sender, recipients, args.subject)
     try:
         send(msg, recipients, host, port, user, password, security)
     except Exception as e:  # the cause is reported without the password
