@@ -9,7 +9,10 @@ export const NAV = [
   { name: 'directory', label: 'Directory', path: '/companies', external: true },
 ];
 
-export const TITLES = { today: 'Today', pipeline: 'Pipeline', studio: 'Message studio', profile: 'Profile', notfound: 'Page not found' };
+// Shown only to the admin (the owner of the catalog rows); everyone else gets the 404 screen at its path.
+export const ADMIN_NAV = [{ name: 'team', label: 'Team', path: '/app/team' }];
+
+export const TITLES = { today: 'Today', pipeline: 'Pipeline', studio: 'Message studio', profile: 'Profile', team: 'Team room', notfound: 'Page not found' };
 
 // -> { name, params, query, redirect? }. name is 'landing' for "/", 'notfound' for anything unknown under /app.
 export function matchRoute(pathname, search = '') {
@@ -27,7 +30,7 @@ export function matchRoute(pathname, search = '') {
     return ID.test(id) ? { name: 'pipeline', params: { companyId: id.toLowerCase() }, query } : { name: 'notfound', params: {}, query };
   }
   if (id !== undefined) return { name: 'notfound', params: {}, query };
-  if (section === 'today' || section === 'profile') return { name: section, params: {}, query };
+  if (section === 'today' || section === 'profile' || section === 'team') return { name: section, params: {}, query };
   if (section === 'studio') {
     const contact = ID.test(query.contact || '') ? query.contact.toLowerCase() : '';
     return { name: 'studio', params: contact ? { contactId: contact } : {}, query };
@@ -40,6 +43,7 @@ export const paths = {
   pipeline: id => (id ? '/app/pipeline/' + id : '/app/pipeline'),
   studio: contactId => (contactId ? '/app/studio?contact=' + contactId : '/app/studio'),
   profile: () => '/app/profile',
+  team: run => (run ? '/app/team?run=' + encodeURIComponent(run) : '/app/team'),
 };
 
 // Same-origin URL or path -> path the router can push; anything else -> null (needs a full navigation).

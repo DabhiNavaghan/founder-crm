@@ -19,7 +19,7 @@ export function DeskProvider({ user, getToken, children }) {
   const [data, setData] = useState(EMPTY);
   const [loaded, setLoaded] = useState({ core: false, profile: false });
   const [error, setError] = useState('');
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(null); // null while the check runs, then true or false
   const [toasts, setToasts] = useState([]);
   const [claiming, setClaiming] = useState(false);
   const userId = user.id;
@@ -49,7 +49,7 @@ export function DeskProvider({ user, getToken, children }) {
   const load = useCallback(async () => {
     setError('');
     db.loadProfile().then(profile => { if (alive.current) setData(d => ({ ...d, profile })); }).catch(() => {}).finally(() => { if (alive.current) setLoaded(l => ({ ...l, profile: true })); });
-    db.ownsCatalog().then(v => { if (alive.current) setIsAdmin(v); }).catch(() => {});
+    db.ownsCatalog().then(v => { if (alive.current) setIsAdmin(v === true); }).catch(() => { if (alive.current) setIsAdmin(false); });
     try { await loadCore(); } catch (e) { if (alive.current) setError(e.message || 'Could not reach the database.'); }
   }, [loadCore]);
 
