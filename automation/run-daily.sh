@@ -164,7 +164,7 @@ load_env() {
 
 log() { local line; line="$(date -u +%H:%M:%S) $*"; echo "$line"; echo "$line" >> "$RUN_LOG"; }
 
-# GitHub can still report a pull request as a draft for a few seconds after it was marked ready.
+# A draft cannot be merged, and GitHub can report one for a few seconds after it was marked ready.
 merge_pr() {
   local i
   for i in 1 2 3 4; do
@@ -924,6 +924,8 @@ publish() {
   PR_URL="$(with_timeout 120 gh pr view "$BRANCH" --repo "$slug" --json url,state --jq 'select(.state=="OPEN") | .url' 2>/dev/null || true)"
   if [ -n "$PR_URL" ]; then
     with_timeout 120 gh pr edit "$PR_URL" --title "$TITLE" --body-file "$body" --add-label "$labels" >> "$RUN_LOG" 2>&1
+    # A pull request kept from an earlier failed run is a draft: a draft cannot be merged.
+    if [ -z "$draft" ]; then with_timeout 60 gh pr ready "$PR_URL" >> "$RUN_LOG" 2>&1; else with_timeout 60 gh pr ready "$PR_URL" --undo >> "$RUN_LOG" 2>&1; fi
   else
     # shellcheck disable=SC2086
     PR_URL="$(with_timeout 120 gh pr create --repo "$slug" --base main --head "$BRANCH" --title "$TITLE" --body-file "$body" --label "$labels" $draft 2>> "$RUN_LOG" | grep -Eo 'https://github\.com/[^ ]+/pull/[0-9]+' | tail -n 1)"
