@@ -8,8 +8,9 @@ Stages (all cached on disk, safe to stop and re-run):
   build    - filter (US or India, operating, working site, description), dedupe on domain across sources and
              against the existing catalog, make slugs                    -> out/companies_multi.json
 
-India (founder task #2): 'yc-india' reads the public YC index for companies whose first listed location is in India,
-and Antler rows whose location tag is India get country 'IN'. India rows carry country 'India'; a source must state
+India (founder task #2): Antler rows whose location tag is India get country 'IN'. 'yc-india' is NOT collected: YC's
+Terms of Use forbid scraping (see SKIPPED); its helpers stay for when YC gives permission. An Indian row's city comes
+only from its source, never from the website's US-address check. India rows carry country 'India'; a source must state
 India, it is never guessed from a city or a domain. scripts/ingest.mjs holds them back until migration 202611260001 is applied.
 
 Usage: python3 multi.py collect|enrich|build|all [--only a16z,accel] [--limit N] [--refresh] [--show-hn]
@@ -59,8 +60,8 @@ SOURCES = {
               'policy': 'robots.txt allows / (only /admin/ and /api/ disallowed, neither is used); no login; no terms-of-use page found.'},
     'yc-india': {'name': 'Y Combinator', 'page': 'https://www.ycombinator.com/companies',
                  'endpoint': 'https://yc-oss.github.io/api/companies/all.json (public index, cached 7 days) + https://www.ycombinator.com/companies/<slug>',
-                 'policy': 'ycombinator.com robots.txt disallows only /verify/*, /companies with query strings and some /library queries; '
-                           '/companies/<slug> is allowed. Same pages scrape.py already reads, at most YC_PAGES_PER_RUN new pages a night, with a pause between them.'},
+                 'policy': 'NOT collected: YC\'s Terms of Use forbid "data mining, robots, scraping or similar data gathering" (see SKIPPED). '
+                           'robots.txt alone would allow /companies/<slug>. The helpers stay in case YC gives written permission.'},
     'hacker-news': {'name': 'Hacker News', 'page': 'https://news.ycombinator.com/launches',
                     'endpoint': 'https://hn.algolia.com/api/v1/search_by_date (public documented HN Search API)',
                     'policy': 'Public API offered for programmatic use; no key, no login.'},
@@ -77,6 +78,9 @@ SKIPPED = {
     'lightspeed': 'Allowed by robots.txt, not collected this round: listing loads through admin-ajax with a nonce; names only.',
     'founders-fund': 'Allowed by robots.txt (Crawl-delay 10), not collected this round: ~64 companies, names only.',
     'khosla': 'robots.txt has no rules, not collected this round: listing has names only.',
+    'yc-india': 'robots.txt allows /companies/<slug>, BUT YC\'s Terms of Use say "you will not engage in or use any data mining, robots, '
+                'scraping or similar data gathering or extraction methods". Not collected; needs written permission from YC. '
+                'The yc-oss index has no licence (unclear), so it is held as well.',
 }
 
 # ---------------------------------------------------------------- small helpers
@@ -472,7 +476,7 @@ def collect_hn(refresh):
 
 
 COLLECTORS = {'500-global': collect_500, 'antler': collect_antler, 'a16z': collect_a16z, 'sequoia': collect_sequoia, 'accel': collect_accel,
-              'hacker-news': collect_hn, 'yc-india': collect_yc_india}
+              'hacker-news': collect_hn}   # 'yc-india' (collect_yc_india) is off: YC's Terms of Use forbid scraping, see SKIPPED
 
 
 def collect(only, refresh=False):
@@ -836,7 +840,8 @@ def build(allc, only):
     S = lambda slug: stats.setdefault(slug, {'listed': 0, 'no_website': 0, 'not_us': 0, 'not_operating': 0, 'us_and_active': 0, 'in_catalog': 0,
                                              'location_unknown': 0, 'site_down': 0, 'site_parked': 0, 'site_not_the_company': 0, 'no_description': 0,
                                              'duplicate_of_other_source': 0, 'new': 0})
-    order = [s for s in SOURCE_ORDER if s in allc] + [s for s in allc if s not in SOURCE_ORDER]
+    # only sources that are still collected: a stale candidates cache cannot bring back a source that was switched off
+    order = [s for s in SOURCE_ORDER if s in allc and s in COLLECTORS] + [s for s in allc if s not in SOURCE_ORDER and s in COLLECTORS]
     for slug in order:
         if only and slug not in only: continue
         meta = SOURCES[slug]
@@ -920,7 +925,9 @@ def build(allc, only):
             notes = [meta['name'] + (f" {c['year']}" if c.get('year') else ''), c['source_url']]
             if c.get('country') not in ('US', 'IN'): notes.append('US check: ' + f.get('why', ''))
             row = {'slug': cand, 'domain': d, 'name': site_casing(c['name'], f)[:200], 'website': norm_url(c['website']),
-                   'description': desc[:600], 'location': canon_location(f.get('city') or ''), 'sector': c.get('sector') or '', 'industry': c.get('industry') or '',
+                   'description': desc[:600],
+                   # an Indian row's city comes only from its source, never from the site's US-address check ('' beats a wrong city)
+                   'location': clean(c.get('location')) if c.get('country') == 'IN' else canon_location(f.get('city') or ''), 'sector': c.get('sector') or '', 'industry': c.get('industry') or '',
                    'logo_url': c.get('logo_url') or dp.get('logo_url') or '', 'careers_url': careers or c.get('careers_url') or '',
                    'contact_url': strict_contact(s.get('contact_url')) or strict_contact(dp.get('contact_url')),
                    'linkedin_url': li.split('?')[0], 'contact_email': general, 'hiring_email': hiring,

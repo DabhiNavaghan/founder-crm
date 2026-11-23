@@ -62,10 +62,13 @@ class Helpers(unittest.TestCase):
         self.assertEqual(multi.yc_batch("Spring 2025"), ("YC X25", 2025))
         self.assertEqual(multi.yc_batch(""), ("Y Combinator", None))
 
-    def test_pages_per_run(self):
-        self.assertEqual(multi.YC_PAGES_PER_RUN, 150)
-        self.assertIn("yc-india", multi.COLLECTORS)
-        self.assertIn("yc-india", multi.SOURCES)
+    def test_yc_india_not_collected(self):
+        # YC's Terms of Use forbid scraping: the collector is off and the reason is recorded.
+        self.assertNotIn("yc-india", multi.COLLECTORS)
+        self.assertIn("yc-india", multi.SKIPPED)
+        self.assertIn("data mining, robots, scraping", multi.SKIPPED["yc-india"])
+        self.assertIn("NOT collected", multi.SOURCES["yc-india"]["policy"])
+        self.assertIn("antler", multi.COLLECTORS)
 
     def test_yc_candidate(self):
         c = multi.yc_candidate(RAZORPAY, {"founders": FOUNDERS, "linkedin_url": "linkedin.com/company/razorpay", "country": "IN"})
@@ -96,41 +99,54 @@ class BuildGate(unittest.TestCase):
         f = {'ok': True, 'parked': False, 'us': None, 'why': '', 'city': '', 'description': '', 'brand': '', 'names': [], 'final_host': '', **kw}
         multi.save(os.path.join(multi.FACTS, multi.site_key(website) + '.json'), f)
 
+    def antler(self, name, website, country, location='', description='', **kw):
+        return {'source': 'antler', 'name': name, 'website': website, 'description': description, 'sector': 'Fintech', 'industry': None,
+                'location': location, 'country': country, 'active': True, 'source_url': 'https://www.antler.co/portfolio',
+                'badge': 'Antler 2024', 'year': 2024, 'people': [], 'linkedin_url': '', **kw}
+
     def test_india_rows_kept_without_us_evidence(self):
-        rp = multi.yc_candidate(RAZORPAY, {"founders": FOUNDERS, "country": "IN"})
-        rc = multi.yc_candidate(REDCARPET, {"founders": [], "country": "IN"})
-        self.facts(rp['website'], brand='razorpay payments for businesses in india ' * 2)
-        self.facts(rc['website'], brand='redcarpetup credit cards for indians ' * 2)
-        us = {'source': 'antler', 'name': 'Acme', 'website': 'https://acme.example', 'description': 'Payments for small shops in Texas.',
-              'sector': '', 'industry': None, 'location': '', 'country': 'US', 'active': True, 'source_url': 'https://www.antler.co/portfolio',
-              'badge': 'Antler 2024', 'year': 2024, 'people': [{'first_name': 'Jo', 'last_name': 'Doe', 'role': 'CEO', 'linkedin_url': '', 'email': 'jo@acme.example'}],
-              'linkedin_url': ''}
-        self.facts(us['website'], brand='acme payments for small shops ' * 2)
-        parked = {**rc, 'name': 'Parked', 'website': 'https://parked.example'}
+        # Criterion 3: an Indian row takes its city from the source, never from the site's US-address check.
+        blr = self.antler('Paytrail', 'https://paytrail.example', 'IN', 'Bengaluru', 'Payments for small shops across India.',
+                          people=[{'first_name': 'Asha', 'last_name': 'Rao', 'role': 'CEO', 'linkedin_url': 'https://www.linkedin.com/in/asharao',
+                                   'email': 'asha@paytrail.example'}])
+        self.facts(blr['website'], brand='paytrail payments for small shops ' * 2, city='San Francisco, CA', us=True, why='US address')
+        # Criterion 4: no city from the source -> no city, even when the site lists a US office.
+        nocity = self.antler('Lendkart', 'https://lendkart.example', 'IN', '', 'Loans for small businesses in India.')
+        self.facts(nocity['website'], brand='lendkart loans for small businesses ' * 2, city='San Francisco, CA', us=True, why='US address')
+        # Criterion 5: a US row keeps the old expression, canon_location(f['city']).
+        us = self.antler('Acme', 'https://acme.example', 'US', '', 'Payments for small shops in Texas.',
+                         people=[{'first_name': 'Jo', 'last_name': 'Doe', 'role': 'CEO', 'linkedin_url': '', 'email': 'jo@acme.example'}])
+        self.facts(us['website'], brand='acme payments for small shops ' * 2, city='Austin, TX', us=True, why='US address')
+        # Site gates still apply to Indian rows.
+        parked = self.antler('Parked', 'https://parked.example', 'IN', 'Pune', 'Credit cards for Indians that banks cannot see.')
         self.facts(parked['website'], parked=True)
-        nodesc = {**rc, 'name': 'Nodesc', 'website': 'https://nodesc.example', 'description': ''}
+        nodesc = self.antler('Nodesc', 'https://nodesc.example', 'IN', 'Pune', '')
         self.facts(nodesc['website'], brand='nodesc ' * 10)
-        other = {**us, 'name': 'Sing', 'website': 'https://sing.example', 'country': 'other'}
-        multi.build({'yc-india': [rp, rc, parked, nodesc], 'antler': [us, other]}, None)
+        other = self.antler('Sing', 'https://sing.example', 'other', '', 'Payments for shops in Singapore.')
+        # Criterion 6: candidates cached under yc-india (switched off) are ignored.
+        rp = multi.yc_candidate(RAZORPAY, {"founders": FOUNDERS, "country": "IN"})
+        self.facts(rp['website'], brand='razorpay payments for businesses in india ' * 2)
+        multi.build({'yc-india': [rp], 'antler': [blr, nocity, us, parked, nodesc, other]}, None)
         out = multi.load(os.path.join(multi.OUT, 'companies_multi.json'))
         rows = {r['name']: r for r in out['rows']}
-        self.assertEqual(set(rows), {'Razorpay', 'RedCarpetUp', 'Acme'})
-        self.assertEqual(rows['Razorpay']['country'], 'India')
-        self.assertEqual(rows['Razorpay']['location'], 'Bengaluru')
-        self.assertEqual(rows['Razorpay']['source'], 'Y Combinator')
-        self.assertEqual(rows['Razorpay']['badges'], [{'label': 'YC W15', 'source': 'yc'}])
-        self.assertTrue(rows['Razorpay']['logo_url'].startswith('https://bookface-images'))
-        self.assertNotIn('US check', rows['Razorpay']['notes'])
-        self.assertEqual(rows['RedCarpetUp']['country'], 'India')
-        self.assertEqual(rows['Acme']['country'], 'United States')
+        self.assertEqual(set(rows), {'Paytrail', 'Lendkart', 'Acme'})
+        self.assertEqual((rows['Paytrail']['country'], rows['Paytrail']['location']), ('India', 'Bengaluru'))
+        self.assertEqual((rows['Lendkart']['country'], rows['Lendkart']['location']), ('India', ''))
+        self.assertEqual((rows['Acme']['country'], rows['Acme']['location']), ('United States', 'Austin, TX'))
+        self.assertNotIn('US check', rows['Paytrail']['notes'])
+        self.assertFalse(any(r.get('source') == 'Y Combinator' for r in out['rows']))
+        self.assertNotIn('yc-india', out['summary']['per_source'])
+        # Criterion 7: no person carries an email.
         for r in out['rows']:
             for p in r.get('people') or []: self.assertNotIn('email', p)
-        stats = out['summary']['per_source']
-        self.assertEqual(stats['yc-india']['new'], 2)
-        self.assertEqual(stats['yc-india']['site_parked'], 1)
-        self.assertEqual(stats['yc-india']['no_description'], 1)
-        self.assertEqual(stats['antler']['not_us'], 1)
-        self.assertEqual(stats['yc-india']['coverage_of_new']['leaders'], 1)
+        self.assertEqual(rows['Paytrail']['people'][0]['linkedin_url'], 'https://www.linkedin.com/in/asharao')
+        stats = out['summary']['per_source']['antler']
+        self.assertEqual(stats['new'], 3)
+        self.assertEqual(stats['site_parked'], 1)
+        self.assertEqual(stats['no_description'], 1)
+        self.assertEqual(stats['not_us'], 1)
+        self.assertEqual(stats['coverage_of_new']['city'], 2)
+        self.assertEqual(stats['coverage_of_new']['leaders'], 2)
 
 
 if __name__ == '__main__':
