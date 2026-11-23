@@ -19,12 +19,51 @@ Never delete an item. Finished items move to "Done" at the bottom as one line ea
 
 ## Open
 
+### B-023 India slice 1: YC + Antler India, country ingest, browse by country (founder task #2)
+- Why: founder task #2; YC and Antler are cleared (research 2026-11-23); India rows are dropped today
+  (`multi.py:704,748`) and would be stored as US (`202611240001_multi_source.sql:240`)
+- Size: M, migration `202611260001_country_ingest.sql`
+- Status: in progress (2026-11-23)
+- Notes: live India count = the total on `/companies?country=india`; report it every run
+
+### B-024 India slice 2: Elevation and Stellaris collectors, Accel India (founder task #2)
+- Why: both list founders with `/in/` LinkedIn; terms have no clause (research 2026-11-23). Accel has no
+  location: India only from the company's own site (schema.org addressCountry, `.in`), never from Accel's fund
+- Size: M, no migration
+- Status: open
+- Notes: Stellaris detail pages hold Stellaris staff emails in consent text: never parse them
+
+### B-025 India slice 3: daily cron and ingest_companies accept India (founder task #2)
+- Why: `api/cron/refresh.js:42` and `api/_lib/yc.js:19` drop non-US; `ingest_companies` inserts 'United States'
+- Size: S–M, migration
+- Status: open
+
+### B-026 India slice 4: re-check Blume and Prime terms (founder task #2)
+- Why: Blume has the best location data; both held because terms were not read (Blume homepage 403)
+- Size: S–M
+- Status: open
+
+### B-027 India slice 5: country facets, India in navigation and sitemap, country-aware cities (founder task #2)
+- Why: visitors should see India from the nav and home page; Indian cities must not merge with US ones
+- Size: M, migration (facet counts)
+- Status: open
+
+### B-028 Correct country of existing rows a source states as Indian (founder task #2)
+- Why: a YC/Antler India company already in the catalog (matched on domain) keeps 'United States'
+- Size: S, migration (update on match only when the source states the country)
+- Status: open
+
+### B-029 Peak XV, Kalaari, 3one4, Nexus: not collected
+- Why: their terms forbid scraping or reuse (research 2026-11-23); record in `SKIPPED` in `multi.py`
+- Size: S
+- Status: dropped (terms forbid collection; only written permission would change this)
+
 ### B-001 Go global: countries in the catalog, the pages and the collectors
 - Why: the product direction is a directory for all countries. Today everything is US-only, so most
   of the world's companies and most visitors are left out.
 - Size: L, to be delivered in slices (one per day)
-- Status: in progress (2026-11-23), slice 1 (country shown + US-neutral copy, with migration
-  `202611250001_catalog_country.sql` that only exposes `country` in the catalog JSON)
+- Status: open. Slice 1 done (2026-11-23, PR #1: country shown + US-neutral copy). Slices 2, 3, 5 in
+  part via B-023 (country ingest, `country` filter on /companies, India collectors)
 - Notes: where the US-only assumption lives today:
   - `api/_lib/yc.js`: `usCompanies()` keeps only companies whose YC region includes
     "United States of America"; the daily cron skips non-US pages with reason `not-us`.
@@ -190,4 +229,4 @@ Never delete an item. Finished items move to "Done" at the bottom as one line ea
 
 ## Done
 
-(nothing yet)
+- B-001 slice 1: show company country, drop US-only copy | done (2026-11-23, PR #1)
