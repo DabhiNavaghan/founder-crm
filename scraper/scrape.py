@@ -28,7 +28,12 @@ LOOSE = ssl.create_default_context(); LOOSE.check_hostname = False; LOOSE.verify
 def fetch(url, timeout=15, limit=1_500_000, strict=True):
     req = urllib.request.Request(url, headers={'User-Agent': UA, 'Accept': 'text/html,application/json;q=0.9,*/*;q=0.5',
                                                'Accept-Language': 'en-US,en;q=0.9', 'Accept-Encoding': 'gzip, deflate'})
-    with urllib.request.urlopen(req, timeout=timeout, context=CTX if strict else LOOSE) as r:
+    try:
+        r = urllib.request.urlopen(req, timeout=timeout, context=CTX if strict else LOOSE)
+    except urllib.error.HTTPError as e:
+        e.close()   # an error reply holds its connection open until it is closed; thousands of them run out of file handles
+        raise
+    with r:
         raw = r.read(limit)
         enc = (r.headers.get('Content-Encoding') or '').lower()
         try:
@@ -355,7 +360,9 @@ def run(jobs, fn, workers, label):
         futs = [ex.submit(fn, *j) for j in jobs]
         for i, f in enumerate(as_completed(futs), 1):
             try: r = f.result()
-            except Exception as e: r = 'error'
+            except Exception as e:
+                r = 'error'
+                if done.get('error', 0) < 3: print(f'[{label}] job failed: {type(e).__name__}: {str(e)[:160]}', flush=True)
             done[r] = done.get(r, 0) + 1
             if i % 100 == 0 or i == len(futs):
                 print(f'[{label}] {i}/{len(futs)} {done} {int(time.time() - t0)}s', flush=True)

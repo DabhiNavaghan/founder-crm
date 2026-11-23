@@ -93,7 +93,7 @@ run_scraper() {
     # It runs as this user, sees only the scraper folder, and is limited in memory and CPU.
     # --init: without it Python is process 1 in the container and ignores the stop signal.
     with_timeout "$secs" $DOCKER run --rm --init --name "$CONTAINER" --user "$(id -u):$(id -g)" \
-      --memory 1g --cpus 1 --pids-limit 256 --security-opt no-new-privileges --security-opt label=disable \
+      --memory 1g --cpus 1 --pids-limit 256 --ulimit nofile=16384:16384 --security-opt no-new-privileges --security-opt label=disable \
       --cap-drop ALL -e HOME=/tmp -e PYTHONUNBUFFERED=1 -e PYTHONDONTWRITEBYTECODE=1 \
       -v "$REPO/scraper:/scraper" -w /scraper "$IMAGE" python multi.py "$@" >> "$LOG" 2>&1
     rc=$?

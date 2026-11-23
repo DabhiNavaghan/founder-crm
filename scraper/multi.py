@@ -394,7 +394,7 @@ def _read_catalog():
     """domain -> slug for companies already in the public catalog, plus every slug in use.
     Read from the public site (sitemap) and the earlier scrape, never from the database."""
     try:
-        sm = cached_text(os.path.join(CACHE, 'foundreach_sitemap.xml'), SITE_URL + '/sitemap.xml', refresh='--refresh' in sys.argv)
+        sm = cached_text(os.path.join(CACHE, 'foundreach_sitemap.xml'), SITE_URL + '/sitemap-companies.xml', refresh='--refresh' in sys.argv)
     except Exception as e:
         print('sitemap unavailable:', e); sm = ''
     slugs = set(re.findall(r'<loc>[^<]*/companies/([a-z0-9_-]+)</loc>', sm))
