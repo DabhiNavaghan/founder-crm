@@ -13,7 +13,7 @@ EnvironmentFile=-/home/opc/apps/foundreach-agents/.env
 Environment=PATH=/home/opc/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/bin/bash /home/opc/apps/foundreach-agents/repo/automation/collect.sh
 # The script stops itself after COLLECT_MAX_MINUTES (50); this is the hard stop behind it.
-TimeoutStartSec=75min
+TimeoutStartSec=20h
 # Stay out of the way of the other applications on this server.
 Nice=10
 IOSchedulingClass=best-effort

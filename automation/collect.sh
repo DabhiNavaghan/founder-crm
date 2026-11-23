@@ -62,6 +62,13 @@ with_timeout() {
   fi
 }
 
+# ---- one FoundReach job at a time: shared with the agent runs (see wait_turn in run-daily.sh).
+# A collection that starts while agents are working waits for them, and the other way round.
+if [ "$DRY_RUN" != 1 ] && command -v flock >/dev/null 2>&1 && exec 8> "$(dirname "$REPO")/queue.lock"; then
+  if ! flock -n 8; then log "another FoundReach job is running; waiting for it to finish"; flock 8; log "the other job is done; starting"; fi
+fi
+STARTED="$(date +%s)"; DEADLINE=$((STARTED + MAX_MINUTES * 60))   # the time limit starts after the wait
+
 # ---- one run at a time
 LOCK="$WORK/.collect.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then

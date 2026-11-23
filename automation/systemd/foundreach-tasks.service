@@ -1,0 +1,27 @@
+[Unit]
+Description=FoundReach founder tasks (GitHub issues labelled agent-task, one at a time)
+Documentation=https://github.com/DabhiNavaghan/founder-crm/blob/main/automation/README.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=opc
+Group=opc
+WorkingDirectory=/home/opc/apps/foundreach-agents/repo
+EnvironmentFile=-/home/opc/apps/foundreach-agents/.env
+Environment=PATH=/home/opc/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/bash /home/opc/apps/foundreach-agents/repo/automation/task-poll.sh
+# A task waits its turn behind whatever is running and then runs for up to the daily limit, and
+# one call may work through several tasks. While this service is active the timer does not start
+# a second one.
+TimeoutStartSec=infinity
+KillMode=control-group
+Nice=10
+CPUWeight=50
+MemoryHigh=2500M
+MemoryMax=3G
+TasksMax=512
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=foundreach-tasks

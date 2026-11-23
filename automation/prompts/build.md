@@ -19,7 +19,7 @@ own the result and you check their work.
 
 ## How to work
 
-1. You are on branch `daily/{{DATE}}`. Dependencies are installed. Do not switch branches.
+1. You are on branch `{{BRANCH}}`. Dependencies are installed. Do not switch branches.
 2. Implement the main feature first and commit it. Then each item under "More improvements", one
    at a time, each in its own commit, and then the technical fixes. Use the time you have: do not
    stop after the first item while planned items remain. If an item will not fit, leave it out

@@ -1,0 +1,11 @@
+[Unit]
+Description=FoundReach founder tasks: look for new ones every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnCalendar=*:0/5
+AccuracySec=30s
+Unit=foundreach-tasks.service
+
+[Install]
+WantedBy=timers.target

@@ -92,6 +92,21 @@ A file is **held**, and the pull request stays open, when it drops a table, colu
 extension, truncates or deletes rows, turns row level security off, touches the secrets, the
 migration records or the sign-in tables, or edits an existing migration file.
 
+### Founder tasks
+
+Open an issue in this repository with the label `agent-task` and the whole team works on it:
+research, the CEO and PM's plan, design, build, the CTO's review and release, then a task report by
+email and a comment on the issue. `automation/task-poll.sh` looks for such issues every 5 minutes
+(`foundreach-tasks.timer`). Only issues opened by the repository owner count.
+
+- Tasks run one at a time, oldest first. A second issue waits for the first.
+- One job at a time on the whole machine: tasks, the nightly agent run and the collection share
+  `queue.lock`. A timer that fires while something is running waits and starts when it is done.
+- A task too big for one run is split by the CEO and PM: the first slice is built at once, the rest
+  goes to the top of the backlog and continues nightly. The issue then gets `agent-partial`.
+- Labels: `agent-running`, `agent-done` (closed), `agent-partial`, `agent-failed`. Remove the
+  state label to queue the issue again. `automation/task-poll.sh --list` shows what is waiting.
+
 ### Team memory
 
 After publishing, a retrospective step reads the day's records (above all the CTO's review of the

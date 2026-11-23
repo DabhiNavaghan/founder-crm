@@ -9,13 +9,13 @@
 #   /home/opc/apps/foundreach-agents/repo        this repository; the scripts run from here
 #   /home/opc/apps/foundreach-agents/workspace   made fresh for each run; the AI stages work here
 #   /home/opc/apps/foundreach-agents/state       tool state of the stages (Claude config, npm cache)
-# Nothing outside this folder and the four foundreach-* systemd units is touched.
+# Nothing outside this folder and the foundreach-* systemd units is touched.
 set -euo pipefail
 
 BASE="${FOUNDREACH_AGENTS_HOME:-/home/opc/apps/foundreach-agents}"
 REPO_URL="${FOUNDREACH_REPO_URL:-https://github.com/DabhiNavaghan/founder-crm.git}"
 UNIT_DIR=/etc/systemd/system
-UNITS="foundreach-collect.service foundreach-collect.timer foundreach-agents.service foundreach-agents.timer"
+UNITS="foundreach-collect.service foundreach-collect.timer foundreach-agents.service foundreach-agents.timer foundreach-tasks.service foundreach-tasks.timer"
 RUN_USER="$(id -un)"
 
 if [ "$(id -u)" = 0 ]; then echo "Run this as the user that owns the apps (opc), not as root." >&2; exit 1; fi
@@ -71,7 +71,7 @@ for u in $UNITS; do
 done
 rm -rf "$tmp"
 sudo systemctl daemon-reload
-sudo systemctl enable --now foundreach-collect.timer foundreach-agents.timer
+sudo systemctl enable --now foundreach-collect.timer foundreach-agents.timer foundreach-tasks.timer
 systemctl list-timers 'foundreach-*' --no-pager || true
 
 echo
