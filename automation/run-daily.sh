@@ -952,7 +952,9 @@ publish() {
     if wait_release "$(git -C "$REPO" rev-parse origin/main 2>/dev/null)"; then pub "Production serves the new release: ${NEW_REL#* }"
     else pub "The new production release was not confirmed within 10 minutes."; fi
     update_container
-  else pub "The merge failed (see run.log); the pull request stays open."
+  else
+    pub "The merge failed (see run.log); the pull request stays open and the next run continues from it."
+    printf '%s %s\n' "$BRANCH" "$PR_URL" > "$MEMORY/carry.txt"
   fi
   set_status publish ok $(( $(date +%s) - t0 )) "$note"
 }
