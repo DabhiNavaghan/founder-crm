@@ -25,8 +25,8 @@ CTX = ssl.create_default_context()
 LOOSE = ssl.create_default_context(); LOOSE.check_hostname = False; LOOSE.verify_mode = ssl.CERT_NONE
 
 
-def fetch(url, timeout=15, limit=1_500_000, strict=True):
-    req = urllib.request.Request(url, headers={'User-Agent': UA, 'Accept': 'text/html,application/json;q=0.9,*/*;q=0.5',
+def fetch(url, timeout=15, limit=1_500_000, strict=True, ua=None):
+    req = urllib.request.Request(url, headers={'User-Agent': ua or UA, 'Accept': 'text/html,application/json;q=0.9,*/*;q=0.5',
                                                'Accept-Language': 'en-US,en;q=0.9', 'Accept-Encoding': 'gzip, deflate'})
     try:
         r = urllib.request.urlopen(req, timeout=timeout, context=CTX if strict else LOOSE)

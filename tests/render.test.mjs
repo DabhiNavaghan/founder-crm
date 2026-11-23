@@ -124,6 +124,13 @@ test('no "US startups" left in the home page, the README or the render code', ()
   }
 });
 
+test('the footer links to the India list right after Directory', () => {
+  const html = list([company()]);
+  const nav = html.slice(html.indexOf('<nav class="foot-nav"'), html.indexOf('</nav>', html.indexOf('<nav class="foot-nav"')));
+  assert.ok(nav.includes('<a href="/companies">Directory</a>\n      <a href="/companies?country=india">Startups in India</a>'));
+  assert.equal(nav.split('href="/companies?country=india"').length - 1, 1);
+});
+
 test('the hiring filter says "Any hiring status"', () => {
   const html = list([company()]);
   assert.ok(html.includes('<option value="">Any hiring status</option>'));

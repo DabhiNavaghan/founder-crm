@@ -16,6 +16,7 @@
 // VITE_SUPABASE_PUBLISHABLE_KEY, CRON_SECRET). They are never read from a file and never printed.
 // Safe to re-run: companies are matched on website domain, so a second run adds nothing.
 import { readFileSync } from 'node:fs';
+import { COUNTRY_MIGRATION, holdBack, countryLine, readyFrom } from './country-hold.mjs';
 
 const argv = process.argv.slice(2);
 const flag = name => argv.includes(name);
@@ -74,6 +75,7 @@ for (const r of fresh) bySource[r.badges[0].source] = (bySource[r.badges[0].sour
 console.log(`file: ${file}`);
 console.log(`rows in file: ${input.length}; to send: ${send.length} (${fresh.length} companies, ${adds.length} badge adds) in ${Math.ceil(send.length / batchSize)} batches of ${batchSize}`);
 console.log('companies by source: ' + (Object.entries(bySource).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'));
+console.log('companies ' + countryLine(fresh));
 console.log(`with city ${fresh.filter(r => r.location).length}, leaders ${fresh.filter(r => r.people.length).length}, careers ${fresh.filter(r => r.careers_url).length}, contact page ${fresh.filter(r => r.contact_url).length}, email ${fresh.filter(r => r.contact_email || r.hiring_email).length}`);
 if (problems.length) { console.log(`${problems.length} rows left out:`); for (const p of problems.slice(0, 20)) console.log('  ' + p); if (problems.length > 20) console.log(`  ... and ${problems.length - 20} more`); }
 
@@ -117,11 +119,25 @@ async function call(batch, attempt = 1) {
   throw new Error(`HTTP ${r.status} ${scrub(data?.message || body)}${hint}`);
 }
 
+// Rows from another country wait until ingest_catalog() stores the row's country (migration 202611260001).
+let ready = false;
+try {
+  const r = await fetch(`${url}/rest/v1/rpc/fr_country_ingest_ready`, {
+    method: 'POST',
+    headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: '{}',
+    signal: AbortSignal.timeout(20000),
+  });
+  ready = readyFrom(r.status, await r.text());
+} catch { ready = false; }
+const { send: toSend, held } = holdBack(send, ready);
+if (held.length) console.log(`held until migration ${COUNTRY_MIGRATION} is applied: ${held.length} (${countryLine(held).replace('by country: ', '')})`);
+
 const total = { added: 0, updated: 0, badged: 0, contacts: 0, skipped: 0, suppressed: 0, unmatched: 0 };
 let catalog = null, done = 0;
 const started = Date.now();
-for (let i = 0; i < send.length; i += batchSize) {
-  const batch = send.slice(i, i + batchSize);
+for (let i = 0; i < toSend.length; i += batchSize) {
+  const batch = toSend.slice(i, i + batchSize);
   let out;
   try { out = await call(batch); } catch (e) {
     console.error(`batch ${i / batchSize + 1} failed after ${done} rows: ${e.message}`);
@@ -131,7 +147,7 @@ for (let i = 0; i < send.length; i += batchSize) {
   for (const k of Object.keys(total)) total[k] += Number(out[k]) || 0;
   catalog = out.catalog_count ?? catalog;
   done += batch.length;
-  console.log(`  ${done}/${send.length}  +${out.added || 0} new, ${out.updated || 0} merged, ${out.badged || 0} badged, ${out.contacts || 0} people`);
+  console.log(`  ${done}/${toSend.length}  +${out.added || 0} new, ${out.updated || 0} merged, ${out.badged || 0} badged, ${out.contacts || 0} people`);
 }
 console.log(`done in ${Math.round((Date.now() - started) / 1000)}s`);
 console.log(`new companies ${total.added}; already listed and merged ${total.updated}; rows that gained a badge ${total.badged}; people added ${total.contacts}`);
