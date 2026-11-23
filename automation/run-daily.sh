@@ -164,6 +164,17 @@ load_env() {
 
 log() { local line; line="$(date -u +%H:%M:%S) $*"; echo "$line"; echo "$line" >> "$RUN_LOG"; }
 
+# GitHub can still report a pull request as a draft for a few seconds after it was marked ready.
+merge_pr() {
+  local i
+  for i in 1 2 3 4; do
+    with_timeout 180 gh pr merge "$PR_URL" --squash --delete-branch --subject "$TITLE" --body "" >> "$RUN_LOG" 2>&1 && return 0
+    [ "$(gh pr view "$PR_URL" --json state -q .state 2>/dev/null)" = MERGED ] && return 0
+    with_timeout 60 gh pr ready "$PR_URL" >> "$RUN_LOG" 2>&1
+    sleep 15
+  done
+  return 1
+}
 set_status() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$STATUS_FILE"; log "[$1] $2 (${3}s) $4"; emit "$1" "$2" "$4" "${EMIT_META:-}"; EMIT_META=""; }
 # emit STAGE STATUS NOTE [META]   one line for the team room (see emit.sh); silent in a dry run
 emit() {
@@ -933,7 +944,7 @@ publish() {
     pub "Not merged: it touches pipeline, deployment or package files."
     ask "Review pull request $PR_URL by hand" "It changes pipeline, deployment or package files, which the agents may not merge themselves." "Open the link and merge it, or close it."
   elif [ "$migration" = 1 ] && ! apply_migrations "$base" "$sha"; then pub "Not merged: $MIG_NOTE."
-  elif with_timeout 180 gh pr merge "$PR_URL" --squash --delete-branch --subject "$TITLE" --body "" >> "$RUN_LOG" 2>&1; then
+  elif merge_pr; then
     MERGED=1; pub "Merged into main by the CTO's PASS (squash). Vercel deploys production from main."; note="$note, merged"
     with_timeout 120 git -C "$REPO" fetch --quiet origin >> "$RUN_LOG" 2>&1
     if wait_release "$(git -C "$REPO" rev-parse origin/main 2>/dev/null)"; then pub "Production serves the new release: ${NEW_REL#* }"

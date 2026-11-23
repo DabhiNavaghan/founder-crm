@@ -87,7 +87,7 @@ export function Team({ run = '' }) {
   if (state.phase === 'denied') return <NotFound />;
   if (state.phase === 'loading') return <div className="boot" role="status" style={{ minHeight: '50vh' }}><p>Loading the team room…</p></div>;
 
-  const head = <PageHead title="Team room" eyebrow="AGENTS · LIVE" sub={state.updatedAt ? 'Updated ' + hhmm(state.updatedAt) + ' UTC' : ''} />;
+  const head = <PageHead title="Team room" eyebrow="AGENTS · LIVE" sub={'Private: only your admin account can open this page.' + (state.updatedAt ? ' Updated ' + hhmm(state.updatedAt) + ' UTC.' : '')} />;
   const errorLine = state.failed && <p className="grp-empty" role="status">{state.updatedAt
     ? 'Could not refresh. Showing data from ' + hhmm(state.updatedAt) + ' UTC. Trying again in 15 seconds.'
     : 'Could not load the team room. Trying again in 15 seconds.'}</p>;

@@ -10,7 +10,7 @@ const SOURCE = String.raw`(function () {
   // Header: a signed-in visitor (Clerk's __client_uat cookie holds a timestamp) gets "Open desk".
   try {
     var uat = d.cookie.match(/(?:^|; )__client_uat=(\d+)/), auth = $('[data-auth]');
-    if (auth && uat && +uat[1] > 0) { auth.textContent = 'Open desk'; auth.href = '/app/today'; }
+    if (auth && uat && +uat[1] > 0) { auth.textContent = 'Open desk'; auth.href = '/app/pipeline'; }
   } catch (e) {}
 
   // Company page: copy link.

@@ -155,3 +155,13 @@ a.facts:hover{border-color:var(--ink)}
 .go{display:inline-flex;align-items:center;min-height:var(--tap)}
 @media (max-width:599px){.top-app .nav.nav-admin{grid-template-columns:repeat(5,1fr)}}
 @media (min-width:900px){.board{grid-template-columns:repeat(5,minmax(0,1fr))}.win .board-col .task{padding:var(--s3)}}
+
+/* Message studio: searchable person picker */
+.picker{position:relative}
+.picker-list{position:absolute;z-index:30;left:0;right:0;top:calc(var(--tap) + 6px);max-height:min(340px,50vh);overflow-y:auto;margin:0;padding:4px;list-style:none;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-s);box-shadow:var(--shadow-2)}
+.picker-list li[role=option]{display:flex;flex-direction:column;justify-content:center;gap:2px;min-height:var(--tap);padding:6px 10px;border-radius:8px;cursor:pointer}
+.picker-list li[role=option] b{font-weight:600;color:var(--text)}
+.picker-list li[role=option] small{font-size:var(--t-sm);color:var(--muted)}
+.picker-list li[aria-selected=true]{background:var(--soft)}
+.picker-list li.is-chosen b::after{content:" \2713";color:var(--accent-ink)}
+.picker-none{padding:10px;font-size:var(--t-sm);color:var(--muted)}

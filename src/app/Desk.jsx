@@ -5,7 +5,6 @@ import { Link } from '../lib/router.jsx';
 import { ADMIN_NAV, NAV, TITLES, paths } from '../lib/routes.js';
 import { supabase } from '../lib/data.js';
 import { Mark, Menu, Wordmark } from './ui.jsx';
-import { Today } from './Today.jsx';
 import { Pipeline } from './Pipeline.jsx';
 import { Studio } from './Studio.jsx';
 import { Profile } from './Profile.jsx';
@@ -47,7 +46,7 @@ function Frame({ route, onSignOut, onAccount }) {
     <a className="skip" href="#app-main">Skip to content</a>
     <header className="top top-app">
       <div className="wrap">
-        <Link className="brand" to={paths.today()}><Wordmark /></Link>
+        <a className="brand" href={paths.home()}><Wordmark /></a>
         <nav className={'nav' + (isAdmin === true ? ' nav-admin' : '')} aria-label="Main">
           {(isAdmin === true ? [...NAV, ...ADMIN_NAV] : NAV).map(item => item.external
             ? <a key={item.name} href={item.path}>{item.label}</a>
@@ -66,7 +65,6 @@ function Frame({ route, onSignOut, onAccount }) {
     </header>
     <main id="app-main" className="wrap app-main" tabIndex={-1}>
       {claiming ? <div className="boot" role="status" style={{ minHeight: '50vh' }}><p>Saving the company to your pipeline…</p></div>
-        : section === 'today' ? <Today />
         : section === 'pipeline' ? <Pipeline companyId={route.params.companyId || ''} />
         : section === 'studio' ? <Studio contactId={route.params.contactId || ''} />
         : section === 'profile' ? <Profile />

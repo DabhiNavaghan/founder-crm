@@ -1,6 +1,6 @@
 // Message studio: pick a person, give one real detail, get a draft, edit it, send it yourself, log it.
 // If the AI service is unavailable the draft box still works: write by hand and log it.
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useDesk } from './store.jsx';
 import { Link, navigate } from '../lib/router.jsx';
 import { paths } from '../lib/routes.js';
@@ -9,6 +9,60 @@ import { hostOf, safeEmail, safeUrl } from '../lib/url.js';
 import { CopyButton, Ext, LoadError, Logo, PageHead, SkeletonList } from './ui.jsx';
 
 const BLANK = { subject: '', body: '', score: null, improvement: '', savedId: '' };
+
+const MAX_OPTIONS = 50;
+
+// Searchable picker: type a person's name, a role or a company name. Arrow keys, Enter and Escape work.
+function PersonPicker({ id, groups, person, company, onPick }) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const listRef = useRef(null);
+  const all = useMemo(() => groups.flatMap(r => r.people.map(p => {
+    const name = personName(p.contact), role = p.contact.role || '';
+    return { id: p.contact.id, name, role, company: r.company.name, hay: (name + ' ' + role + ' ' + r.company.name).toLowerCase() };
+  })), [groups]);
+  const found = useMemo(() => {
+    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+    return terms.length ? all.filter(o => terms.every(t => o.hay.includes(t))) : all;
+  }, [all, query]);
+  const shown = found.slice(0, MAX_OPTIONS);
+  const chosen = person ? personName(person) + (company ? ' · ' + company.name : '') : '';
+
+  useEffect(() => { setActive(0); }, [query]);
+  useEffect(() => { if (open) listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' }); }, [active, open]);
+
+  const pick = o => { setOpen(false); setQuery(''); onPick(o.id); };
+  const key = e => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!open) { setOpen(true); return; }
+      if (shown.length) setActive(i => (i + (e.key === 'ArrowDown' ? 1 : shown.length - 1)) % shown.length);
+    } else if (e.key === 'Enter') {
+      if (open && shown[active]) { e.preventDefault(); pick(shown[active]); }
+    } else if (e.key === 'Escape' && open) { e.preventDefault(); setOpen(false); setQuery(''); }
+  };
+
+  return <div className="picker">
+    <input className="field" id={id} type="text" role="combobox" autoComplete="off" spellCheck={false}
+      aria-expanded={open} aria-controls={id + '-list'} aria-autocomplete="list" aria-describedby={id + '-hint'}
+      aria-activedescendant={open && shown[active] ? id + '-o-' + shown[active].id : undefined}
+      placeholder={chosen || 'Search by person or company'} value={open ? query : chosen}
+      onChange={e => { setQuery(e.target.value); setOpen(true); }}
+      onFocus={() => setOpen(true)} onClick={() => setOpen(true)} onBlur={() => { setOpen(false); setQuery(''); }} onKeyDown={key} />
+    {open && <ul className="picker-list" id={id + '-list'} role="listbox" aria-label="People" ref={listRef}>
+      {shown.map((o, i) => <li key={o.id} id={id + '-o-' + o.id} role="option" aria-selected={i === active}
+        className={person && o.id === person.id ? 'is-chosen' : undefined}
+        onMouseDown={e => e.preventDefault()} onMouseEnter={() => setActive(i)} onClick={() => pick(o)}>
+        <b>{o.name}</b><small>{[o.role, o.company].filter(Boolean).join(' · ')}</small>
+      </li>)}
+      {!shown.length && <li className="picker-none" role="presentation">No one matches "{query.trim()}". Try a company name.</li>}
+      {found.length > shown.length && <li className="picker-none" role="presentation">Showing {shown.length} of {found.length}. Keep typing to narrow it down.</li>}
+    </ul>}
+    <p className="hint" id={id + '-hint'}>{all.length} {all.length === 1 ? 'person' : 'people'} in your pipeline. Type a name, a role or a company.</p>
+    <p className="sr-only" role="status">{open ? (shown.length ? found.length + (found.length === 1 ? ' match' : ' matches') : 'No matches') : ''}</p>
+  </div>;
+}
 
 export function Studio({ contactId }) {
   const { data, rows, loaded, error, reload, getToken, saveMessage, logEvent, toast } = useDesk();
@@ -104,10 +158,7 @@ export function Studio({ contactId }) {
           <h2 id="st-who">1. Who are you writing to?</h2>
           <div>
             <label className="label" htmlFor="st-contact">Person</label>
-            <select className="field" id="st-contact" value={person ? person.id : ''} onChange={e => navigate(paths.studio(e.target.value), { replace: true })}>
-              <option value="">Choose a person</option>
-              {groups.map(r => <optgroup key={r.company.id} label={r.company.name}>{r.people.map(p => <option key={p.contact.id} value={p.contact.id}>{personName(p.contact)}{p.contact.role ? ' · ' + p.contact.role : ''}</option>)}</optgroup>)}
-            </select>
+            <PersonPicker id="st-contact" groups={groups} person={person} company={company} onPick={id => navigate(paths.studio(id), { replace: true })} />
           </div>
           <div className="inline-form" style={{ margin: 0 }}><div className="row2">
             <div><label className="label" htmlFor="st-channel">Channel</label>

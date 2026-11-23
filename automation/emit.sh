@@ -21,7 +21,8 @@ fr_emit() {
   fi
   [ -n "$FR_EMIT_URL" ] && [ -n "$FR_EMIT_KEY" ] && [ -n "$FR_EMIT_SECRET" ] || return 0
   local meta="${8:-}"
-  printf '%s' "$meta" | jq -e 'type == "object"' >/dev/null 2>&1 || meta='{}'
+  # jq 1.6 answers "true" for empty input, so an empty value is checked first.
+  { [ -n "$meta" ] && printf '%s' "$meta" | jq -e 'type == "object"' >/dev/null 2>&1; } || meta='{}'
   FR_S="$FR_EMIT_SECRET" jq -cn --arg run "$1" --arg kind "$2" --arg task "$3" --arg title "$4" --arg stage "$5" --arg status "$6" \
       --arg note "$(printf '%s' "$7" | cut -c1-600)" --argjson meta "$meta" \
       '{p_secret: $ENV.FR_S, p_event: {run: $run, kind: $kind, task_id: $task, title: $title, stage: $stage, status: $status, note: $note, meta: $meta}}' 2>/dev/null \

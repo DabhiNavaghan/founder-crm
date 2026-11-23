@@ -23,7 +23,9 @@ test('team paths encode the run name', () => {
 });
 
 test('other routes are unchanged', () => {
-  assert.equal(matchRoute('/app/today').name, 'today');
+  assert.equal(matchRoute('/app/today').redirect, '/companies');
+  assert.equal(matchRoute('/app').redirect, '/companies');
+  assert.equal(matchRoute('/app/today').name, 'away');
   assert.equal(matchRoute('/app/nope').name, 'notfound');
   assert.equal(matchRoute('/app/profile').name, 'profile');
 });
