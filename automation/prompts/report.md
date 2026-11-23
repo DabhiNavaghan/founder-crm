@@ -22,6 +22,12 @@ State only what these files say. Every number in the report must be counted from
 cannot be counted, show "n/a", never an estimate. Do not claim something was built, merged, released
 or applied unless `publish.md`, `release.md` or `context.md` says so.
 
+## Times: India time
+
+The founder is in India. Every clock time in the report is India Standard Time, written like
+"10:00 IST". The input files give UTC: add 5 hours 30 minutes (04:30 UTC is 10:00 IST; 20:15 UTC is
+01:45 IST the next day). Never print a UTC time.
+
 ## Length: a sixty-second read
 
 About 250 words in total, never more than 320. Short lines, no paragraphs longer than two sentences,
@@ -54,7 +60,7 @@ One self-contained HTML file that survives email clients:
   "All agents completed", "Completed with issues" or "Run failed".
 - Title "Daily Intelligence Report", subtitle "GLOBAL COMPANY DISCOVERY & PRODUCT DEVELOPMENT".
 - Three labelled facts in a row: REPORT DATE (like "23 November 2026"), EXECUTION WINDOW (run start
-  to the time now, from `context.md`, like "04:30 – 04:48 UTC"), REPORT STATUS.
+  to the time now, from `context.md`, like "10:00 – 10:18 IST"), REPORT STATUS.
 
 **1. Executive summary**: two sentences on the day, then a row of four number tiles (big number,
 small label), in a two-by-two grid on narrow screens:

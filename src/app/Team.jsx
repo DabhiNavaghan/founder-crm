@@ -7,13 +7,25 @@ import { paths } from '../lib/routes.js';
 import { loadDashboard } from '../lib/data.js';
 import { NotFound } from './NotFound.jsx';
 import {
-  COLUMNS, board, classifyResult, clock, fmtCost, fmtDuration, fmtNum, hhmm, nextRuns, nightShift, normalize,
+  COLUMNS, board, classifyResult, clock, fmtCost, fmtDuration, fmtNum, nextRuns, nightShift, normalize,
   nowRunning, oneLine, progress, queueFromRuns, runDetail, skyFor, statusLook, teamCards, usage,
 } from '../lib/team.js';
 
 const POLL_MS = 15000;
 const RUNS = 30;
-const local = t => (t == null ? '–' : new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+// Every time on this page is the viewer's own: IST in India, the local zone anywhere else.
+const zoneName = () => {
+  for (const loc of [undefined, 'en-IN', 'en-GB', 'en-AU', 'en-US']) {
+    try {
+      const z = new Intl.DateTimeFormat(loc, { timeZoneName: 'short' }).formatToParts(new Date()).find(x => x.type === 'timeZoneName')?.value || '';
+      if (z && !/^(GMT|UTC)[+-]/.test(z)) return z;
+    } catch { /* try the next locale */ }
+  }
+  const m = -new Date().getTimezoneOffset(), h = Math.floor(Math.abs(m) / 60), r = Math.abs(m) % 60;
+  return 'UTC' + (m < 0 ? '-' : '+') + h + (r ? ':' + String(r).padStart(2, '0') : '');
+};
+const TZ = zoneName();
+const at = t => (t == null || !Number.isFinite(t) ? '–' : new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false }));
 const initials = name => name.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase();
 
 // ---- The scene: an original low-resolution landscape drawn in SVG, scaled up with crisp edges ----
@@ -167,11 +179,11 @@ export function Team({ run = '' }) {
             <h1 id="tr-title" tabIndex={-1} data-page-title>
               {loading ? <>Opening the team room<span className="tr-caret" aria-hidden="true" /></>
                 : first ? <>The team is on it. <em>{first.stage.charAt(0).toUpperCase() + first.stage.slice(1)} in progress.</em></>
-                  : <>All quiet. <em>Next run {hhmm(next.agents)} UTC.</em></>}
+                  : <>All quiet. <em>Next run {at(next.agents)} {TZ}.</em></>}
             </h1>
             <p className="tr-lead">{first
               ? (first.agents.length ? first.agents.join(' and ') : 'The pipeline') + ' on "' + first.title + '".'
-              : 'Collection starts ' + hhmm(next.collect) + ' UTC (' + local(next.collect) + ' your time), the agents ' + hhmm(next.agents) + ' UTC (' + local(next.agents) + ').'}</p>
+              : 'Collection starts ' + at(next.collect) + ', the agents ' + at(next.agents) + ' ' + TZ + ', your time.'}</p>
             <dl className="tr-stats">
               <div><dt>Working</dt><dd>{working.length}<small>/{cards.length}</small></dd></div>
               <div><dt>Waiting</dt><dd>{queue.waiting.length}</dd></div>
@@ -182,8 +194,8 @@ export function Team({ run = '' }) {
           <p className="tr-foot">
             <span className="tr-faces" aria-hidden="true">{cards.map(c => <i key={c.id} className={'tr-face tr-face-' + c.status}>{initials(c.name)}</i>)}</span>
             <span role="status">{state.failed
-              ? (state.updatedAt ? 'Could not refresh · showing ' + hhmm(state.updatedAt) + ' UTC · retrying' : 'Could not load · retrying in 15 s')
-              : 'Private to you · ' + (state.updatedAt ? 'updated ' + hhmm(state.updatedAt) + ' UTC' : 'loading') + ' · refreshes every 15 s'}</span>
+              ? (state.updatedAt ? 'Could not refresh · showing ' + at(state.updatedAt) + ' ' + TZ + ' · retrying' : 'Could not load · retrying in 15 s')
+              : 'Private to you · ' + (state.updatedAt ? 'updated ' + at(state.updatedAt) + ' ' + TZ : 'loading') + ' · refreshes every 15 s'}</span>
           </p>
         </section>
 
@@ -192,7 +204,7 @@ export function Team({ run = '' }) {
           <div>
             <p className="tr-chip-n">{c.name} <span className="sr-only">{statusLook(c.status).label}</span></p>
             <p className="tr-chip-l">{c.line}</p>
-            {c.at != null && <p className="tr-chip-m">{c.stage + ' · ' + hhmm(c.at) + ' UTC · '}<Link className="tr-link" to={paths.team(c.run)}>open run</Link></p>}
+            {c.at != null && <p className="tr-chip-m">{c.stage + ' · ' + at(c.at) + ' ' + TZ + ' · '}<Link className="tr-link" to={paths.team(c.run)}>open run</Link></p>}
           </div>
         </li>)}</ul>
       </div>
@@ -210,7 +222,7 @@ export function Team({ run = '' }) {
                   <p className="tr-mono">{fmtDuration(s.seconds) + ' · ' + fmtNum(s.turns) + ' turns · ' + fmtNum(s.tokens) + ' tokens · ' + fmtCost(s.cost)}</p>
                   {(s.text || s.note) && <p className="tr-mute">{oneLine(s.text) || oneLine(s.note)}</p>}
                 </div>
-                <time>{hhmm(s.startAt ?? s.endAt)}</time>
+                <time>{at(s.startAt ?? s.endAt)}</time>
               </li>)}</ol> : <p className="tr-mute">–</p>}
             </div>
             <div>
@@ -267,11 +279,11 @@ export function Team({ run = '' }) {
           {cols[col.id].length ? <ul>{cols[col.id].map(c => <li className="tr-card" key={c.key}>
             <p className="tr-mono">{c.taskId != null ? 'TASK-' + c.taskId : c.kind === 'nightly' ? 'NIGHTLY' : 'RUN'}</p>
             <p className="tr-card-t">{c.run ? <Link to={paths.team(c.run)}>{c.title}</Link> : c.title}</p>
-            <p className="tr-mono">{[c.startedAt != null ? (c.run ? 'started ' : 'opened ') + hhmm(c.startedAt) + ' UTC' : '', c.stale ? 'stopped without a final report' : ''].filter(Boolean).join(' · ')}</p>
+            <p className="tr-mono">{[c.startedAt != null ? (c.run ? 'started ' : 'opened ') + at(c.startedAt) + ' ' + TZ : '', c.stale ? 'stopped without a final report' : ''].filter(Boolean).join(' · ')}</p>
             {c.pr && <p><Pr href={c.pr} n={c.prNumber} /></p>}
           </li>)}</ul> : <p className="tr-none">empty</p>}
         </section>)}</div>
-        <p className="tr-mono">Released means the CTO passed it and it is live on the site. Needs you means it was held or it failed.</p>
+        <p className="tr-mono">All times are your local time. Released means the CTO passed it and it is live on the site. Needs you means it was held or it failed.</p>
       </Win>
 
       <Win file="night_shift.log — live" eyebrow="While you sleep" title="The night shift," mark="line by line." id="tr-night" className="tr-wide tr-dark" delay={320}>
@@ -282,7 +294,7 @@ export function Team({ run = '' }) {
             {f.note && <p className="tr-mute">{f.note}</p>}
             <p className="tr-mono">{f.run === 'queue' ? 'queue' : <Link className="tr-link" to={paths.team(f.run)}>{f.runTitle}</Link>}</p>
           </div>
-          <time>{hhmm(f.at)}</time>
+          <time>{at(f.at)}</time>
         </li>)}</ol> : <p className="tr-mute">{loading ? 'Loading…' : 'No agent activity yet. When the team starts a run, it shows up here within 15 seconds.'}</p>}
         <p className="tr-ends"><span>You: {sky === 'night' ? 'asleep' : 'away'}</span><span>Team: {first ? 'online' : 'standing by'}</span></p>
       </Win>
