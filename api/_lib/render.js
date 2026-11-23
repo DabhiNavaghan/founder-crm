@@ -29,6 +29,22 @@ export function trimWords(v, n) {
   const at = cut.lastIndexOf(' ');
   return (at > n * 0.6 ? cut.slice(0, at) : cut).replace(/[\s,;:·(—-]+$/, '') + '…';
 }
+// A country as it is shown: the full name, never a code. Known US spellings become "United States";
+// empty values and "unknown" give ''. The country is only ever read from its own field, never derived from the city.
+const US_NAMES = new Set(['us', 'usa', 'united states', 'united states of america']);
+export function countryName(v) {
+  const t = text(v);
+  const key = t.toLowerCase().replace(/\./g, '').replace(/\s+/g, ' ').trim();
+  if (!key || key === 'unknown') return '';
+  return US_NAMES.has(key) ? 'United States' : clip(t, 60);
+}
+// "Austin, United States". The country is left out when the city text already ends with it ("San Francisco, CA, USA").
+const cityHasCountry = (city, country) => countryName(city.split(',').pop()).toLowerCase() === country.toLowerCase();
+function placeOf(c) {
+  const city = text(c.city), country = countryName(c.country);
+  if (!city || !country) return city || country;
+  return cityHasCountry(city, country) ? city : `${city}, ${country}`;
+}
 const num = n => Number(n || 0).toLocaleString('en-US');
 const plural = (n, one, many) => (Number(n) === 1 ? one : many);
 
@@ -222,10 +238,11 @@ function row(c) {
   const desc = clip(text(c.description), 140);
   const leaders = Number(c.leaders) || 0;
   const sector = text(c.sector) || text(c.industry);
+  const place = placeOf(c);
   const meta = [
     c.hiring ? '<span class="chip">Hiring</span>' : '',
     sector ? `<span class="m m-sector">${esc(sector)}</span>` : '',
-    text(c.city) ? `<span class="m m-city">${esc(text(c.city))}</span>` : '',
+    place ? `<span class="m m-city">${esc(place)}</span>` : '',
     leaders ? `<span class="m m-lead">${leaders} ${plural(leaders, 'leader', 'leaders')}</span>` : '',
   ].join('');
   return `<li><a class="row" href="/companies/${slug}">${logo(c.logo_url, name, 44)}<div class="row-body"><div class="row-head"><h2 class="row-name">${esc(name)}</h2>${tags ? `<span class="tags">${tags}</span>` : ''}</div>${desc ? `<p class="row-desc">${esc(desc)}</p>` : ''}</div><div class="row-meta">${meta}</div></a><a class="qv-btn" href="/companies/${slug}#reach" data-qv="${esc(c.slug)}" aria-label="Quick view: ${esc(name)}">${useIcon('i-q')}<span>Quick view</span></a><a class="qv-btn sv-btn" href="/?save=${slug}" rel="nofollow" aria-label="Save ${esc(name)}">${useIcon('i-s')}<span class="sr-only">Save</span></a></li>`;
@@ -290,7 +307,7 @@ const fitTitle = (stem, pageBit = '') => {
 };
 // What each page type says about itself. labels: { sector, city, batch, source, collection }.
 const PAGE_TYPES = {
-  sector: { eyebrow: 'Sector', desc: (l, n) => `${n} ${l.sector} startups in the US: founders, careers pages and contact links.`, h1: l => `${l.sector} startups`, sub: (l, n) => `${n} US ${l.sector} startups, with the people who run them and how to reach each one.` },
+  sector: { eyebrow: 'Sector', desc: (l, n) => `${n} ${l.sector} startups: founders, careers pages and contact links.`, h1: l => `${l.sector} startups`, sub: (l, n) => `${n} ${l.sector} startups, with the people who run them and how to reach each one.` },
   city: { eyebrow: 'City', desc: (l, n) => `${n} startups in ${l.city}: founders, careers pages and contact links.`, h1: l => `Startups in ${l.city}`, sub: (l, n) => `${n} startups based in ${l.city}, with the people who run them and how to reach each one.` },
   batch: { eyebrow: 'YC batch', desc: (l, n) => `${n} startups from the ${batchName(l.batch)} batch: founders, careers pages and contact links.`, h1: l => `${batchName(l.batch)} startups`, sub: (l, n) => `${n} companies from Y Combinator's ${batchName(l.batch).slice(3)} batch, with the people who run them and how to reach each one.` },
   source: { eyebrow: 'Source', desc: (l, n) => `${n} startups listed by ${l.source}: founders, careers pages and contact links.`, h1: l => `${l.source} startups`, sub: (l, n) => `${n} startups listed by ${l.source}, with the people who run them and how to reach each one.` },
@@ -332,7 +349,7 @@ export function renderList({ kind = 'all', path = '/companies', labels = {}, cru
 ${select('sector', 'Sector', `<option value="">All sectors</option>${options(industries, f.sector)}`)}
 ${select('city', 'City', `<option value="">All cities</option>${options(facets?.cities, f.city)}`)}
 ${select('source', 'Source or batch', `<option value="">All sources</option>${sourceOptions}`)}
-${select('hiring', 'Hiring', `<option value="">Hiring or not</option><option value="1"${f.hiring ? ' selected' : ''}>Hiring only</option>`)}
+${select('hiring', 'Hiring', `<option value="">Any hiring status</option><option value="1"${f.hiring ? ' selected' : ''}>Hiring only</option>`)}
 ${f.year ? `<input type="hidden" name="year" value="${esc(f.year)}">` : ''}<button class="btn btn-dark" type="submit">Search</button>
 </form>` : '';
 
@@ -376,10 +393,10 @@ ${f.year ? `<input type="hidden" name="year" value="${esc(f.year)}">` : ''}<butt
     // The heading says what the list is filtered to, like the title does.
     h1 = filtered ? `${subject}${extras ? ' · ' + extras : ''}` : 'Startups you can actually reach';
     hero = `<div class="hero" id="hero"><h1>${esc(h1)}</h1><p class="sub">Every company page shows who runs it and the fastest ways to get in touch.</p></div>`;
-    title = filtered ? fitTitle(h1, pageBit) : `Startup directory: ${num(all)} US startups you can contact${pageBit} | FoundReach`;
+    title = filtered ? fitTitle(h1, pageBit) : `Startup directory: ${num(all)} startups you can contact${pageBit} | FoundReach`;
     description = filtered
       ? `${num(total)} ${plural(total, 'result', 'results')} for ${subject}${extras ? ' (' + extras + ')' : ''}: founders, careers pages and contact links.`
-      : `Browse ${num(all)} US startups by sector, city, source and batch. Each page lists the founders, careers page, contact page and LinkedIn.${page > 1 ? ` Page ${page} of ${num(pages)}.` : ''}`;
+      : `Browse ${num(all)} startups by sector, city, source and batch. Each page lists the founders, careers page, contact page and LinkedIn.${page > 1 ? ` Page ${page} of ${num(pages)}.` : ''}`;
   }
   const factsHtml = type && facts ? `<div class="facts"><div><b>${num(total)}</b><span>${plural(total, 'company', 'companies')}</span></div><div><b>${num(facts.hiring)}</b><span>hiring now</span></div><div><b>${num(facts.leaders)}</b><span>leaders listed</span></div><div><b>${num(facts.new)}</b><span>new this week</span></div></div>` : '';
 
@@ -404,7 +421,9 @@ ${f.year ? `<input type="hidden" name="year" value="${esc(f.year)}">` : ''}<butt
 // data: { fresh, rows, run }
 export function renderNew({ fresh, rows, run, nav = null }) {
   const checked = run && dateParts(run.ran_at);
-  const coverage = run && Number(run.our_count) ? `<p class="note">Tracking ${num(run.our_count)} companies${checked ? ` · checked ${timeTag(run.ran_at)}` : ''}. <a href="/about-data">About the data</a></p>` : '';
+  // The same total as the rest of the site (catalog_stats) when it is loaded; the last run's own count otherwise.
+  const tracked = Number(nav?.companies) || Number(run?.our_count) || 0;
+  const coverage = run && tracked ? `<p class="note">Tracking ${num(tracked)} companies${checked ? ` · checked ${timeTag(run.ran_at)}` : ''}. <a href="/about-data">About the data</a></p>` : '';
   rows = validRows(rows).slice(0, PER_PAGE);
   const h1 = fresh ? 'New this week' : 'Recently added';
   const sub = fresh ? 'Companies added to the directory in the last 7 days.' : 'Nothing new in the last 7 days. These are the most recent additions.';
@@ -439,6 +458,8 @@ export function quickView(c) {
     logo_url: safeUrl(c.logo_url) || null,
     badges: badgesOf(c).map(b => b.label),
     city: text(c.city) || null,
+    country: countryName(c.country) || null,
+    place: placeOf(c) || null,
     industry: text(c.industry) || null,
     sector: text(c.sector) || null,
     description: clip(text(c.description), 280),
@@ -463,6 +484,7 @@ export function renderCompany(c, { similar = [], nav = null } = {}) {
   const name = text(c.name) || 'Company';
   const tag = batchLabel(c.batch);
   const city = text(c.city), sector = text(c.sector), industry = text(c.industry);
+  const country = countryName(c.country);
   const topic = industry || sector;
   const description = stripEmails(c.description).trim();
   const flat = description.replace(/\s+/g, ' ').trim();
@@ -500,15 +522,15 @@ export function renderCompany(c, { similar = [], nav = null } = {}) {
   const org = { '@type': 'Organization', name, url: safeUrl(c.website) || canonical };
   if (safeUrl(c.logo_url)) org.logo = safeUrl(c.logo_url);
   if (flat) org.description = clip(flat, 600);
-  if (city) org.address = { '@type': 'PostalAddress', addressLocality: city };
+  if (city || country) org.address = { '@type': 'PostalAddress', ...(city ? { addressLocality: city } : {}), ...(country ? { addressCountry: country } : {}) };
   if (linkedin) org.sameAs = [linkedin];
 
+  // City, country, sector: only the parts that exist, with a dot between them. The chip follows without a dot.
   const metaBits = [
     city && slugify(city) ? `<a href="/city/${esc(slugify(city))}">${esc(city)}</a>` : '',
-    city && topic ? '<span aria-hidden="true">&middot;</span>' : '',
+    country && !(city && cityHasCountry(city, country)) ? `<span>${esc(country)}</span>` : '',
     topic && slugify(topic) ? `<a href="/sector/${esc(slugify(topic))}">${esc(topic)}</a>` : '',
-    careers ? '<span class="chip">Hiring</span>' : '',
-  ].join('');
+  ].filter(Boolean).join('<span aria-hidden="true">&middot;</span>') + (careers ? '<span class="chip">Hiring</span>' : '');
   const note = `${lead ? `${esc(lead.name)}${lead.role ? ` is ${esc(lead.role)}` : ' is listed as a leader'}. ` : ''}Drafting and saving need a free sign-in.`;
   const paragraphs = description.split(/(?:\r?\n\s*){2,}/).map(p => p.replace(/\s+/g, ' ').trim()).filter(Boolean);
   const about = paragraphs.length ? paragraphs.map(p => `<p>${esc(p)}</p>`).join('') : `<p class="muted">No description yet.</p>`;
@@ -583,7 +605,7 @@ export function renderAbout({ nav = null }) {
 <div class="hero" id="hero"><p class="eyebrow">About the data</p><h1>Our data</h1><p class="sub">What FoundReach lists, where it comes from, how often it is refreshed and what we never publish.</p></div>
 <div class="prose">
 <h2 id="what">What we list</h2>
-<p>FoundReach is a free directory of US startups${total ? ` (${num(total)} companies today)` : ''}. Each company page shows a short description, its sector and city, the links that help you get in touch (website, careers page, contact page and company LinkedIn) and the founders and leaders with their public LinkedIn profiles.</p>
+<p>FoundReach is a free directory of startups${total ? ` (${num(total)} companies today)` : ''}. Most are based in the United States today. More countries are coming. Each company page shows a short description, its sector and location, the links that help you get in touch (website, careers page, contact page and company LinkedIn) and the founders and leaders with their public LinkedIn profiles.</p>
 <h2 id="sources">Sources and what badges mean</h2>
 <p>Companies come from public startup directories and from each company's own website. A badge on a company, such as "YC S24", says which public list it appears on and, where known, which batch or year. A company can carry more than one badge.</p>
 ${sources.length ? `<ul>${sources.map(s => `<li><a href="${esc(s.url)}">${esc(text(s.label))}</a>: ${num(s.count)} ${plural(s.count, 'company', 'companies')}</li>`).join('')}</ul>` : ''}

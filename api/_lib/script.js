@@ -100,7 +100,7 @@ const SOURCE = String.raw`(function () {
         ? el('img', 'logo', null, { width: 44, height: 44, alt: '', referrerpolicy: 'no-referrer', src: c.logo_url })
         : el('span', 'logo logo-fb', (c.name || '?').charAt(0), { 'aria-hidden': 'true' }));
       box.appendChild(el('h2', 'qv-name', c.name, { id: 'qv-name' }));
-      [c.city, c.industry || c.sector].forEach(function (t) { if (t) meta.appendChild(el('span', '', t)); });
+      [c.place || c.city, c.industry || c.sector].forEach(function (t) { if (t) meta.appendChild(el('span', '', t)); });
       if (c.hiring) meta.appendChild(el('span', 'chip', 'Hiring'));
       box.appendChild(meta); head.appendChild(box); body.appendChild(head);
       if (c.badges && c.badges.length) {

@@ -1,6 +1,6 @@
 # FoundReach
 
-A public directory of US startups (server-rendered pages under `api/`) and a signed-in outreach desk (the Vite + React app under `src/`).
+A free directory of startups (server-rendered pages under `api/`) and a signed-in outreach desk (the Vite + React app under `src/`).
 
 - `/` is the landing page: static HTML in `index.html`, with live counts filled in by `src/landing/enhance.js`.
 - `/app/today`, `/app/pipeline`, `/app/pipeline/:companyId`, `/app/studio?contact=:id`, `/app/profile` are the signed-in app (`src/app/`), routed by `src/lib/router.jsx`.

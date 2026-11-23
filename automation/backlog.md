@@ -23,7 +23,8 @@ Never delete an item. Finished items move to "Done" at the bottom as one line ea
 - Why: the product direction is a directory for all countries. Today everything is US-only, so most
   of the world's companies and most visitors are left out.
 - Size: L, to be delivered in slices (one per day)
-- Status: open
+- Status: in progress (2026-11-23), slice 1 (country shown + US-neutral copy, with migration
+  `202611250001_catalog_country.sql` that only exposes `country` in the catalog JSON)
 - Notes: where the US-only assumption lives today:
   - `api/_lib/yc.js`: `usCompanies()` keeps only companies whose YC region includes
     "United States of America"; the daily cron skips non-US pages with reason `not-us`.
@@ -46,6 +47,65 @@ Never delete an item. Finished items move to "Done" at the bottom as one line ea
   6. Scraper: replace the US-evidence gate with "country stated by the source or by the company's
      own site"; keep the row when the country is known, mark it unknown otherwise.
   7. City pages and sector pages: make them country-aware so two cities with the same name do not merge.
+
+### B-013 Careers link on /hiring cards and hiring-only facet counts
+- Why: job seekers must open each company to reach its careers page; /hiring filter counts look
+  like all companies (research 2026-11-23; https://hn.algolia.com/api/v1/items/44986911)
+- Size: S
+- Status: open
+
+### B-014 Clean up the city facet
+- Why: duplicates ("New York City, NY" / "New York, New York"), state-only entries, "United States"
+  and "Remote, OR" in the city list; groundwork for B-001 slices 4 and 7 and for local founder meetups
+  (https://hn.algolia.com/api/v1/items/44902569)
+- Size: S–M (display-time normalisation map first; stored normalisation later)
+- Status: open
+
+### B-015 Source URL per company on its page
+- Why: "Sources" names Y Combinator but links nothing; accuracy worries
+  (https://hn.algolia.com/api/v1/items/49974089); guardrails already require source URLs
+- Size: S if the URL is stored, M otherwise (check the schema first)
+- Status: open
+
+### B-016 Home page leftovers for crawlers
+- Why: "Opening your desk…" boot text sits in the static HTML (`index.html:221`); `<noscript>` hides
+  it for browsers but crawlers still read it
+- Size: S
+- Status: open
+
+### B-017 Remote flag on /hiring, only when the source states it
+- Why: Wellfound and Built In both filter by remote; non-US job seekers ask for it
+  (https://hn.algolia.com/api/v1/items/49039128)
+- Size: M, probably a migration. Part of B-003.
+- Status: open
+
+### B-018 Funding stage and recent round, sort by recent funding
+- Why: TopStartups shows stage and last round; "new money means urgent hiring"
+  (https://hn.algolia.com/api/v1/items/44986911). Only from sources that state it.
+- Size: M–L, needs a migration; split before picking
+- Status: open
+
+### B-019 Added date per entry and an RSS feed on /new
+- Why: returning visitors, investors and sales watch new companies; /new has no dates and no feed
+- Size: S
+- Status: open
+
+### B-020 Data quality checks: batch labels and sector labels
+- Why: "YC S27" shown in Nov 2026 on /companies/memorable; card sectors ("Security", "Marketing")
+  are not in the sector filter
+- Size: S (investigate, then fix or add a backlog item)
+- Status: open
+
+### B-021 "Save" on cards for signed-out visitors
+- Why: `/?save=…` lands a signed-out visitor on the home page with no explanation
+- Size: S
+- Status: open
+
+### B-022 Founder decisions on home-page wording
+- Why: the home page promises signed-in "emails", and its "After you sign in" preview shows a named
+  founder (sample or real?). If the founder is real, that person is shown off their company page.
+- Size: S once decided
+- Status: open (needs the founder)
 
 ### B-002 Entry points for each audience
 - Why: visitors arrive with different goals; one generic directory page serves none of them well.
