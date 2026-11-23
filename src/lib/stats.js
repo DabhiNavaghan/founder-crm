@@ -39,7 +39,7 @@ export function normalizeStats(raw) {
 }
 
 let cached = null;
-// One request per page load, shared by the landing page and Today. Resolves to null when unavailable.
+// One request per page load, shared by the landing page. Resolves to null when unavailable.
 export function loadStats() {
   if (!cached) {
     cached = fetch('/api/public/stats', { headers: { Accept: 'application/json' } })

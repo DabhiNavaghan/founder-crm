@@ -2,13 +2,14 @@
 import React, { useEffect, useRef } from 'react';
 import { DeskProvider, useDesk } from './store.jsx';
 import { Link } from '../lib/router.jsx';
-import { NAV, TITLES, paths } from '../lib/routes.js';
+import { ADMIN_NAV, NAV, TITLES, paths } from '../lib/routes.js';
 import { supabase } from '../lib/data.js';
 import { Mark, Menu, Wordmark } from './ui.jsx';
-import { Today } from './Today.jsx';
 import { Pipeline } from './Pipeline.jsx';
 import { Studio } from './Studio.jsx';
 import { Profile } from './Profile.jsx';
+import { Team } from './Team.jsx';
+import { NotFound } from './NotFound.jsx';
 
 export default function Desk({ user, getToken, route, onSignOut, onAccount }) {
   if (!supabase) return <div className="boot"><Mark size={44} /><h1>Your desk is being set up</h1><p>FoundReach is waiting for its database connection. Try again in a few minutes.</p><button type="button" className="btn" onClick={onSignOut}>Sign out</button></div>;
@@ -16,17 +17,20 @@ export default function Desk({ user, getToken, route, onSignOut, onAccount }) {
 }
 
 function Frame({ route, onSignOut, onAccount }) {
-  const { user, claiming } = useDesk();
+  const { user, claiming, isAdmin } = useDesk();
   const first = useRef(true);
   const section = route.name;
 
   // On every navigation: name the page, go to the top, and move focus to the page heading.
   useEffect(() => {
-    document.title = (TITLES[section] || 'Desk') + ' | FoundReach';
     if (first.current) { first.current = false; return; }
     window.scrollTo(0, 0);
     document.querySelector('[data-page-title]')?.focus({ preventScroll: true });
   }, [section, route.params.companyId]); // not on query changes: choosing a person in the studio keeps focus where it is
+  // The Team room keeps the 404 title for anyone who is not the admin.
+  useEffect(() => {
+    document.title = (TITLES[section === 'team' && isAdmin !== true ? 'notfound' : section] || 'Desk') + ' | FoundReach';
+  }, [section, isAdmin]);
   // The app is private: keep it out of search results even if a crawler runs scripts.
   useEffect(() => {
     const meta = document.createElement('meta');
@@ -42,9 +46,9 @@ function Frame({ route, onSignOut, onAccount }) {
     <a className="skip" href="#app-main">Skip to content</a>
     <header className="top top-app">
       <div className="wrap">
-        <Link className="brand" to={paths.today()}><Wordmark /></Link>
-        <nav className="nav" aria-label="Main">
-          {NAV.map(item => item.external
+        <a className="brand" href={paths.home()}><Wordmark /></a>
+        <nav className={'nav' + (isAdmin === true ? ' nav-admin' : '')} aria-label="Main">
+          {(isAdmin === true ? [...NAV, ...ADMIN_NAV] : NAV).map(item => item.external
             ? <a key={item.name} href={item.path}>{item.label}</a>
             : <Link key={item.name} to={item.path} aria-current={section === item.name ? 'page' : undefined}>
               {item.short ? <><span className="nav-x">{item.label}</span><span className="nav-n">{item.short}</span></> : item.label}
@@ -61,11 +65,12 @@ function Frame({ route, onSignOut, onAccount }) {
     </header>
     <main id="app-main" className="wrap app-main" tabIndex={-1}>
       {claiming ? <div className="boot" role="status" style={{ minHeight: '50vh' }}><p>Saving the company to your pipeline…</p></div>
-        : section === 'today' ? <Today />
         : section === 'pipeline' ? <Pipeline companyId={route.params.companyId || ''} />
         : section === 'studio' ? <Studio contactId={route.params.contactId || ''} />
         : section === 'profile' ? <Profile />
-        : <div className="state"><span className="state-code">404</span><h1 tabIndex={-1} data-page-title>That page is not part of your desk.</h1><p>The address may be old or mistyped.</p><div className="actions"><Link className="btn btn-dark" to={paths.today()}>Go to Today</Link><Link className="btn" to={paths.pipeline()}>Open Pipeline</Link></div></div>}
+        : section === 'team' ? (isAdmin === null ? <div className="boot" role="status" style={{ minHeight: '50vh' }}><p>Loading the team room…</p></div>
+          : isAdmin === true ? <Team run={route.query.run || ''} /> : <NotFound />)
+        : <NotFound />}
     </main>
     <footer className="foot">
       <div className="wrap">

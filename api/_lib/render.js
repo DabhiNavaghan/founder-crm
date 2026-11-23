@@ -124,7 +124,7 @@ export function siteHeader(active = '') {
     <nav class="nav" aria-label="Main">
       ${NAV.map(([key, href, label, wide]) => `<a${wide ? ' class="w"' : ''} href="${href}"${key === active ? ' aria-current="page"' : ''}>${label}</a>`).join('\n      ')}
     </nav>
-    <a class="btn" href="/app/today" data-auth>Sign in</a>
+    <a class="btn" href="/app/pipeline" data-auth>Sign in</a>
   </div>
 </header>`;
 }

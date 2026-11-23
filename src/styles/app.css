@@ -1,4 +1,4 @@
-/* FoundReach signed-in app (Today, Pipeline). Needs tokens.css and directory-v2.css. */
+/* FoundReach signed-in app (Pipeline, Message studio). Needs tokens.css and directory-v2.css. */
 .page-head{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:8px 16px;padding:24px 0 16px}
 .page-head h1{font:700 1.75rem/1.15 var(--font);letter-spacing:-.03em;color:var(--ink)}
 .grp{margin-top:var(--s5)}

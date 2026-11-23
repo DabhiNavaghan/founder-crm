@@ -2,7 +2,7 @@ import React, { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState } f
 import { createRoot } from 'react-dom/client';
 import { ClerkProvider, useAuth, useClerk, useUser } from '@clerk/react';
 import { navigate, useRoute } from './lib/router.jsx';
-import { internalPath } from './lib/routes.js';
+import { HOME, internalPath } from './lib/routes.js';
 import { parseIntent, peekIntent, storeIntent, stripIntent } from './lib/intent.js';
 import { hadSession, rememberSession, setView } from './lib/session.js';
 import { enhanceLanding } from './landing/enhance.js';
@@ -55,11 +55,11 @@ function Shell() {
   useEffect(() => { if (isLoaded) rememberSession(isSignedIn); }, [isLoaded, isSignedIn]);
   useEffect(() => { if (route.redirect) navigate(route.redirect, { replace: true }); }, [route.redirect]);
   // Signed-in visitors never see the landing page.
-  useEffect(() => { if (isLoaded && isSignedIn && route.name === 'landing') navigate('/app/today', { replace: true }); }, [isLoaded, isSignedIn, route.name]);
+  useEffect(() => { if (isLoaded && isSignedIn && route.name === 'landing') navigate(HOME, { replace: true }); }, [isLoaded, isSignedIn, route.name]);
   // Signed out with something to do (a Save/Draft link, a click on Sign in, or an app address): open sign-in once.
   useEffect(() => {
     if (!isLoaded || isSignedIn || opened.current) return;
-    if (asked.current || intentWaiting() || route.name !== 'landing') { opened.current = true; clerk.openSignIn({}); }
+    if (asked.current || intentWaiting() || (route.name !== 'landing' && route.name !== 'away')) { opened.current = true; clerk.openSignIn({}); }
   }, [isLoaded, isSignedIn, route.name]);
   // "Sign in" links on the static landing page open the sign-in dialog in place.
   useEffect(() => {
@@ -83,6 +83,7 @@ function Shell() {
   }, [showLanding]);
 
   if (showLanding) return null;
+  if (route.name === 'away') return <Splash text="Opening the directory…" />;
   if (!isLoaded) return waited ? <SignInGate ready={false} onSignIn={openSignIn} /> : <Splash />;
   if (!isSignedIn) return <SignInGate ready onSignIn={() => clerk.openSignIn({})} />;
   if (onLanding) return <Splash />;
@@ -107,7 +108,7 @@ function clerkGo(to, replace) {
 
 function Root() {
   if (!clerkKey) return <Unconfigured />;
-  return <ClerkProvider publishableKey={clerkKey} afterSignOutUrl="/" signInFallbackRedirectUrl="/app/today" signUpFallbackRedirectUrl="/app/today"
+  return <ClerkProvider publishableKey={clerkKey} afterSignOutUrl="/" signInFallbackRedirectUrl={HOME} signUpFallbackRedirectUrl={HOME}
     routerPush={to => clerkGo(to, false)} routerReplace={to => clerkGo(to, true)}>
     <Shell />
   </ClerkProvider>;
