@@ -224,6 +224,20 @@ test('LinkedIn links lose their query string and fragment', () => {
   assert.ok(!html.includes('viewAsMember'));
 });
 
+test('company title and description name careers only when there is a careers link', () => {
+  const without = renderCompany(company());
+  const title = without.match(/<title>(.*?)<\/title>/)[1];
+  assert.equal(title, 'Acme: founders &amp; contact | FoundReach');
+  const desc = without.match(/<meta name="description" content="([^"]*)"/)[1];
+  assert.ok(desc.endsWith('Founders and contact links.'), desc);
+  assert.ok(!/careers/i.test(title + desc));
+  const withCareers = renderCompany(company({ careers_url: 'https://acme.example/careers' }));
+  assert.equal(withCareers.match(/<title>(.*?)<\/title>/)[1], 'Acme: founders, careers &amp; contact | FoundReach');
+  assert.ok(withCareers.match(/<meta name="description" content="([^"]*)"/)[1].endsWith('Founders, careers page and contact links.'));
+  // An unsafe careers URL is not shown, so the title does not promise it.
+  assert.ok(!/careers/i.test(renderCompany(company({ careers_url: 'javascript:alert(1)' })).match(/<title>(.*?)<\/title>/)[1]));
+});
+
 test('the country migration only replaces the two functions and keeps their keys', () => {
   const dir = path.join(root, 'supabase/migrations');
   const file = path.join(dir, '202611250001_catalog_country.sql');

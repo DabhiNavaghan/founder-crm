@@ -530,8 +530,9 @@ export function renderCompany(c, { similar = [], nav = null } = {}) {
   const site = c.name_shared && safeUrl(c.website) ? shortUrl(safeUrl(c.website)).split('/')[0] : '';
   const badges = badgesOf(c);
   const label = [tag || badges[0]?.label, site].filter(Boolean).join(', ');
-  const title = `${name}${label ? ` (${label})` : ''}: founders, careers & contact | FoundReach`;
-  const metaDescription = `${name}${label ? ` (${label})` : ''}${city ? ', ' + city : ''}${flat ? ': ' + clip(flat, 150) : ''} Founders, careers page and contact links.`;
+  // "careers" is named in the title only when the page shows a careers link.
+  const title = `${name}${label ? ` (${label})` : ''}: ${careers ? 'founders, careers & contact' : 'founders & contact'} | FoundReach`;
+  const metaDescription = `${name}${label ? ` (${label})` : ''}${city ? ', ' + city : ''}${flat ? ': ' + clip(flat, 150) : ''} ${careers ? 'Founders, careers page and contact links.' : 'Founders and contact links.'}`;
 
   // Pages that exist, from the cached site stats. Without them the badge and collection links are left out.
   const sourcePages = new Set((nav?.top_sources || []).map(s => s.slug));
