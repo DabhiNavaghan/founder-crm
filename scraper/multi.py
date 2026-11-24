@@ -1130,6 +1130,31 @@ def in_city(s):
     return IN_CITIES[m.group(1).lower()] if m else ''
 
 
+def enclosing_object(raw, start, end, reach=4000):
+    """The JSON object text around raw[start:end]: from its own '{' to its matching '}', skipping nested objects on either side.
+    '' when no balanced object is found within `reach` characters. Braces inside strings are rare in JSON-LD and not handled."""
+    depth, i, lo = 0, start - 1, -1
+    while i >= max(0, start - reach):
+        c = raw[i]
+        if c == '}': depth += 1
+        elif c == '{':
+            if depth == 0: lo = i; break
+            depth -= 1
+        i -= 1
+    if lo < 0: return ''
+    i, stop = end, min(len(raw), end + reach)
+    # the matched text may hold an opened nested object ({"@type":"Country","name":"IN"}) that is still open at `end`
+    depth = raw[start:end].count('{') - raw[start:end].count('}')
+    while i < stop:
+        c = raw[i]
+        if c == '{': depth += 1
+        elif c == '}':
+            if depth == 0: return raw[lo:i + 1]
+            depth -= 1
+        i += 1
+    return ''
+
+
 def india_evidence(pages, host):
     """Does the company's own site state an address in India? Returns {india: True|None, city, why}. Any one counts:
     (a) schema.org addressCountry IN/India (city = addressLocality); (b) a known Indian city within 80 characters of a 6-digit PIN;
@@ -1141,8 +1166,9 @@ def india_evidence(pages, host):
         path = urllib.parse.urlparse(url).path or '/'
         for m in re.finditer(r'"addressCountry"\s*:\s*(?:\{[^}]*?"name"\s*:\s*)?"([^"]{2,40})"', raw or ''):
             if m.group(1).strip().upper() not in IN_COUNTRY: continue
-            win = raw[max(0, m.start() - 600):m.end() + 600]
-            lo = re.search(r'"addressLocality"\s*:\s*"([^"]{2,40})"', win)
+            # the locality of this address only: another office's addressLocality nearby is never read
+            win = enclosing_object(raw, m.start(), m.end())
+            lo = re.search(r'"addressLocality"\s*:\s*"([^"]{2,40})"', win) if win else None
             loc = clean(lo.group(1)) if lo else ''
             city = in_city(loc) or (loc if re.fullmatch(r"[A-Z][A-Za-z.' -]{2,30}", loc) else '')
             found.append((0, city, 'schema.org addressCountry ' + m.group(1).strip()))

@@ -246,6 +246,30 @@ class IndiaEvidence(unittest.TestCase):
         r = multi.india_evidence([('https://x.com/', '{"addressCountry":"US","addressLocality":"Austin"}')], 'x.com')
         self.assertIsNone(r['india'])
 
+    def test_schema_org_locality_from_the_same_address(self):
+        sg = '{"@type":"PostalAddress","addressLocality":"Singapore","addressCountry":"SG"}'
+        blr = '{"@type":"PostalAddress","addressLocality":"Bengaluru","addressCountry":"IN"}'
+        for addresses in ([sg, blr], [blr, sg]):
+            page = '<script type="application/ld+json">{"@type":"Organization","address":[' + ','.join(addresses) + ']}</script>'
+            r = multi.india_evidence([('https://x.com/', page)], 'x.com')
+            self.assertEqual((r['india'], r['city']), (True, 'Bengaluru'), addresses[0][:40])
+        # the plan's bare form, both orders
+        for raw in ('[{"addressLocality":"Singapore","addressCountry":"SG"},{"addressLocality":"Bengaluru","addressCountry":"IN"}]',
+                    '[{"addressLocality":"Bengaluru","addressCountry":"IN"},{"addressLocality":"Singapore","addressCountry":"SG"}]'):
+            self.assertEqual(multi.india_evidence([('https://x.com/', raw)], 'x.com')['city'], 'Bengaluru')
+        # an Indian address without a locality does not borrow the next office's city
+        raw = '[{"addressCountry":"IN"},{"addressLocality":"London","addressCountry":"GB"}]'
+        self.assertEqual(multi.india_evidence([('https://x.com/', raw)], 'x.com'), {'india': True, 'city': '', 'why': 'schema.org addressCountry IN'})
+        # a nested object before the country (geo) is skipped when looking for the address's own brace
+        raw = '{"address":{"geo":{"lat":1},"addressLocality":"Pune","addressCountry":"India"},"x":{"addressLocality":"Paris"}}'
+        self.assertEqual(multi.india_evidence([('https://x.com/', raw)], 'x.com')['city'], 'Pune')
+
+    def test_enclosing_object(self):
+        raw = 'x {"a":1,"b":{"c":2},"d":"IN"} y'
+        at = raw.index('"d"')
+        self.assertEqual(multi.enclosing_object(raw, at, at + 8), '{"a":1,"b":{"c":2},"d":"IN"}')
+        self.assertEqual(multi.enclosing_object('"addressCountry":"IN"', 0, 21), '')
+
     def test_city_and_pin(self):
         r = multi.india_evidence([('https://x.com/contact', '<p>3rd Floor, 80 Feet Road</p><p>Koramangala, Bengaluru, Karnataka 560034</p>')], 'x.com')
         self.assertEqual((r['india'], r['city']), (True, 'Bengaluru'))
