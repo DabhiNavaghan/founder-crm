@@ -622,11 +622,14 @@ def india_candidate(slug, name, website, sector, source_url, people, year=None, 
 
 class DetailPages:
     """One source's detail pages, cached in cache/sources/<slug>/detail/. A cached page is re-fetched only after DETAIL_MAX_AGE,
-    whatever --refresh says; at most `cap` new fetches per run, so the next night continues where this one stopped. A Blocked
-    on a detail page stops this source's detail fetches for the run (older cached pages are still read)."""
+    whatever --refresh says; at most `cap` new fetches per run, so the next night continues where this one stopped. A refusal
+    (403/429/503, a challenge or a sign-in page) stops this source's detail fetches for the run at once; time-outs stop them only
+    after TIMEOUTS_IN_A_ROW in a row, so one slow page does not end the night (older cached pages are still read)."""
+    TIMEOUTS_IN_A_ROW = 3
+
     def __init__(self, slug, cap=DETAIL_CAP, pause=INDIA_PAUSE):
         self.slug, self.cap, self.pause = slug, cap, pause
-        self.fetched = self.waiting = 0
+        self.fetched = self.waiting = self.timeouts = 0
         self.blocked = None
 
     def path(self, key):
@@ -641,9 +644,16 @@ class DetailPages:
             return cached_text(path, url) if have else None
         self.fetched += 1
         try:
-            return cached_text(path, url, refresh=True, timeout=25, limit=3_000_000, pause=self.pause)
+            text = cached_text(path, url, refresh=True, timeout=25, limit=3_000_000, pause=self.pause)
+            self.timeouts = 0
+            return text
         except Blocked as e:
-            self.blocked = _detail_blocks[self.slug] = e
+            if e.status == 'timeout':
+                self.timeouts += 1
+                print(f'[collect] {self.slug}: {url} timed out ({self.timeouts} in a row)', flush=True)
+                if self.timeouts >= self.TIMEOUTS_IN_A_ROW: self.blocked = _detail_blocks[self.slug] = e
+            else:
+                self.blocked = _detail_blocks[self.slug] = e
         except Exception as e:
             print(f'[collect] {self.slug}: {url} failed ({type(e).__name__})', flush=True)
         return cached_text(path, url) if have else None

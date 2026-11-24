@@ -442,6 +442,56 @@ class Fetching(TempCache):
         self.assertEqual(self.asked, ['https://s.example/a'])
         self.assertEqual(multi._detail_blocks['stellaris'].status, 403)
 
+    def timeout_then(self, answers):
+        """Stub scrape.fetch with a list of answers in order: 'T' is a time-out, an int is an HTTP error, a str is the page."""
+        self.asked = []
+
+        def fake(url, *a, **kw):
+            self.asked.append(url)
+            v = answers.pop(0)
+            if v == 'T': raise urllib.error.URLError(TimeoutError('timed out'))
+            if isinstance(v, int): raise http_error(url, v)
+            return url, v
+        mock.patch.object(multi.scrape, 'fetch', side_effect=fake).start()
+
+    def test_detail_timeouts_reset_on_success(self):
+        dp = multi.DetailPages('elevation')
+        self.timeout_then(['T', 'T', 'ok', 'T', 'ok'])
+        got = [dp.get(k, 'https://e.example/' + k) for k in 'abcde']
+        self.assertEqual(got, [None, None, 'ok', None, 'ok'])
+        self.assertEqual(len(self.asked), 5)
+        self.assertIsNone(dp.blocked)
+        self.assertNotIn('elevation', multi._detail_blocks)
+
+    def test_detail_three_timeouts_in_a_row_stop(self):
+        dp = multi.DetailPages('elevation')
+        self.timeout_then(['T', 'T', 'T', 'never'])
+        for k in 'abc': self.assertIsNone(dp.get(k, 'https://e.example/' + k))
+        self.assertEqual(dp.blocked.status, 'timeout')
+        self.assertEqual(multi._detail_blocks['elevation'].status, 'timeout')
+        self.assertIsNone(dp.get('d', 'https://e.example/d'))
+        self.assertEqual(len(self.asked), 3)                                              # the 4th call makes no fetch
+
+    def test_detail_refusal_stops_at_once(self):
+        for code in (403, 429, 503):
+            multi._detail_blocks.clear()
+            dp = multi.DetailPages('prime')
+            self.timeout_then([code, code, 'never'])                                      # 429/503 are retried once by fetch_checked
+            self.assertIsNone(dp.get('a', 'https://p.example/a'))
+            self.assertEqual(dp.blocked.status, code)
+            self.assertIsNone(dp.get('b', 'https://p.example/b'))
+            self.assertEqual(len(self.asked), 1 if code == 403 else 2, code)
+        dp = multi.DetailPages('prime')
+        self.timeout_then(['<html><head><title>Just a moment...</title></head></html>', 'never'])
+        dp.get('a', 'https://p.example/a')
+        self.assertEqual(dp.blocked.status, 'challenge')
+        self.assertIsNone(dp.get('b', 'https://p.example/b'))
+        self.assertEqual(len(self.asked), 1)
+        dp = multi.DetailPages('prime')
+        mock.patch.object(multi.scrape, 'fetch', return_value=('https://p.example/login', '<html></html>')).start()
+        dp.get('a', 'https://p.example/a')
+        self.assertEqual(dp.blocked.status, 'login')
+
     def test_collect_elevation_end_to_end(self):
         base = 'https://elevationcapital.com'
         self.serve({base + '/portfolio': ELEVATION_LISTING, base + '/portfolio/acko': ACKO_DETAIL})
