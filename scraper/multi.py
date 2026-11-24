@@ -205,11 +205,22 @@ def retry_after(value, default=30, cap=300):
     return default
 
 
+LOGIN_PATH = re.compile(r'/(?:login|signin|sign-in|users/sign_in)(?:/|\.\w+$|$)', re.I)   # a whole path segment: /login, /login.php
+
+
+def login_redirect(requested, final):
+    """True when a 200 answer came from a different path that is a sign-in page: the source wants a login, which we never do."""
+    if not final: return False
+    want, got = urllib.parse.urlparse(requested).path or '/', urllib.parse.urlparse(final).path or '/'
+    return want.rstrip('/') != got.rstrip('/') and bool(LOGIN_PATH.search(got))
+
+
 def fetch_checked(url, timeout=40, limit=30_000_000):
-    """scrape.fetch, but a refusal or a time-out raises Blocked. After 429/503 it waits (Retry-After) and tries once more."""
+    """scrape.fetch, but a refusal, a time-out or a jump to a sign-in page raises Blocked. After 429/503 it waits (Retry-After)
+    and tries once more."""
     for attempt in (1, 2):
         try:
-            _, text = scrape.fetch(url, timeout=timeout, limit=limit)
+            final, text = scrape.fetch(url, timeout=timeout, limit=limit)
         except urllib.error.HTTPError as e:
             if e.code in (429, 503) and attempt == 1:
                 time.sleep(retry_after(e.headers.get('Retry-After') if e.headers else None))
@@ -218,6 +229,7 @@ def fetch_checked(url, timeout=40, limit=30_000_000):
             raise
         except (urllib.error.URLError, TimeoutError, ConnectionError):
             raise Blocked('timeout', url)
+        if login_redirect(url, final): raise Blocked('login', url)
         if is_challenge(text): raise Blocked('challenge', url)
         return text
 

@@ -379,6 +379,25 @@ class Fetching(TempCache):
         self.assertFalse(multi.is_challenge('<html><body>' + '<p>We build software for clinics.</p>' * 200 + '<script src="recaptcha"></script></body></html>'))
         self.assertFalse(multi.is_challenge('{"hits": [{"title": "captcha"}]}'))
 
+    def test_login_redirect_is_blocked(self):
+        url = 'https://x.com/portfolio'
+        mock.patch.object(multi.scrape, 'fetch', return_value=('https://x.com/login?next=/portfolio', '<html>Sign in</html>')).start()
+        with self.assertRaises(multi.Blocked) as cm: multi.fetch_checked(url)
+        self.assertEqual((cm.exception.status, cm.exception.url), ('login', url))
+        with self.assertRaises(multi.Blocked):
+            multi.cached_text(os.path.join(multi.SRC, 'x', 'l.html'), url, refresh=True)
+        self.assertFalse(os.path.exists(os.path.join(multi.SRC, 'x', 'l.html')))       # a sign-in page is never cached
+        for final in ('https://x.com/users/sign_in', 'https://x.com/Sign-In', 'https://x.com/auth/signin'):
+            mock.patch.object(multi.scrape, 'fetch', return_value=(final, '<html></html>')).start()
+            with self.assertRaises(multi.Blocked, msg=final): multi.fetch_checked(url)
+        # the same URL, a trailing slash, or a redirect to a normal page returns the text
+        for final in (url, url + '/', 'https://www.x.com/portfolio', 'https://x.com/companies', 'https://x.com/blog/login-tips-for-founders'):
+            mock.patch.object(multi.scrape, 'fetch', return_value=(final, '<html>ok</html>')).start()
+            self.assertEqual(multi.fetch_checked(url), '<html>ok</html>', final)
+        # a page that is itself a login path is not a redirect
+        mock.patch.object(multi.scrape, 'fetch', return_value=('https://x.com/login', '<html>ok</html>')).start()
+        self.assertEqual(multi.fetch_checked('https://x.com/login'), '<html>ok</html>')
+
     def test_collect_records_blocked_and_empty(self):
         def blocked(refresh): raise multi.Blocked(403, 'https://blocked.example/portfolio')
         def fine(refresh): return [{'name': 'A'}]
