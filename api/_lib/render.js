@@ -66,7 +66,8 @@ export function safeLinkedin(u) {
   if (!url) return '';
   const p = new URL(url);
   const host = p.hostname.toLowerCase();
-  return (host === 'linkedin.com' || host.endsWith('.linkedin.com')) && /^\/(company|in|school|showcase)\/[^/]+/i.test(p.pathname) ? url : '';
+  // Tracking and view flags (?viewAsMember=true, ?trk=…, #…) are dropped: the link is origin + path only.
+  return (host === 'linkedin.com' || host.endsWith('.linkedin.com')) && /^\/(company|in|school|showcase)\/[^/]+/i.test(p.pathname) ? p.origin + p.pathname : '';
 }
 // A contact page has a path segment that is exactly one of these (so /solutions/contact-centers is not one).
 const CONTACT_SEGMENTS = new Set(['contact', 'contact-us', 'contactus', 'get-in-touch', 'support', 'help']);

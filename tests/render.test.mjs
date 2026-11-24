@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { COUNTRY_SOURCES, countryName, joinNames, quickView, renderAbout, renderCompany, renderList, renderNew } from '../api/_lib/render.js';
+import { COUNTRY_SOURCES, countryName, joinNames, quickView, renderAbout, renderCompany, renderList, renderNew, safeLinkedin } from '../api/_lib/render.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DOT = '<span aria-hidden="true">&middot;</span>';
@@ -210,6 +210,18 @@ test('joinNames joins with commas and a final "and"', () => {
   assert.equal(joinNames(['A']), 'A');
   assert.equal(joinNames(['A', 'B']), 'A and B');
   assert.equal(joinNames(['A', 'B', 'C']), 'A, B and C');
+});
+
+test('LinkedIn links lose their query string and fragment', () => {
+  assert.equal(safeLinkedin('https://www.linkedin.com/company/memorable/?viewAsMember=true'), 'https://www.linkedin.com/company/memorable/');
+  assert.equal(safeLinkedin('https://linkedin.com/in/jane-doe?trk=x#a'), 'https://linkedin.com/in/jane-doe');
+  assert.equal(safeLinkedin('https://www.linkedin.com/company/acme'), 'https://www.linkedin.com/company/acme');
+  for (const bad of ['https://example.com/company/acme', 'https://www.linkedin.com/search/results?q=x', 'javascript:alert(1)', '', 'data:text/html,x', 'https://linkedin.com.evil.example/in/x']) {
+    assert.equal(safeLinkedin(bad), '', bad);
+  }
+  const html = renderCompany(company({ linkedin_url: 'https://www.linkedin.com/company/acme/?viewAsMember=true' }));
+  assert.ok(html.includes('https://www.linkedin.com/company/acme/'));
+  assert.ok(!html.includes('viewAsMember'));
 });
 
 test('the country migration only replaces the two functions and keeps their keys', () => {
