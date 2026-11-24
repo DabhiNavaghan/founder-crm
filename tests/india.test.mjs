@@ -39,9 +39,10 @@ test('/companies?country=india selects India, shows the chip and names India in 
   assert.match(html, /<a class="chip-x" href="\/companies" aria-label="Remove filter: Country India"><span>India<\/span><\/a>/);
   assert.equal(h1(html), 'Startups in India');
   assert.equal(title(html), 'Startups in India: founders, careers &amp; contact | FoundReach');
-  assert.match(html, /0 results for Startups in India: founders, careers pages and contact links\./);
+  // With no rows yet, India gets the "being added" state and its own description (see render.test.mjs).
+  assert.match(html, /content="Indian startups are being added to FoundReach from Elevation Capital/);
   assert.ok(!html.includes('Browse India'), 'no pill once a country is chosen');
-  assert.match(html, /No companies match these filters\./);
+  assert.match(html, /Companies in India are being added\./);
 });
 
 test('the United States reads "in the United States"; a city wins over the country', () => {

@@ -246,6 +246,30 @@ class IndiaEvidence(unittest.TestCase):
         r = multi.india_evidence([('https://x.com/', '{"addressCountry":"US","addressLocality":"Austin"}')], 'x.com')
         self.assertIsNone(r['india'])
 
+    def test_schema_org_locality_from_the_same_address(self):
+        sg = '{"@type":"PostalAddress","addressLocality":"Singapore","addressCountry":"SG"}'
+        blr = '{"@type":"PostalAddress","addressLocality":"Bengaluru","addressCountry":"IN"}'
+        for addresses in ([sg, blr], [blr, sg]):
+            page = '<script type="application/ld+json">{"@type":"Organization","address":[' + ','.join(addresses) + ']}</script>'
+            r = multi.india_evidence([('https://x.com/', page)], 'x.com')
+            self.assertEqual((r['india'], r['city']), (True, 'Bengaluru'), addresses[0][:40])
+        # the plan's bare form, both orders
+        for raw in ('[{"addressLocality":"Singapore","addressCountry":"SG"},{"addressLocality":"Bengaluru","addressCountry":"IN"}]',
+                    '[{"addressLocality":"Bengaluru","addressCountry":"IN"},{"addressLocality":"Singapore","addressCountry":"SG"}]'):
+            self.assertEqual(multi.india_evidence([('https://x.com/', raw)], 'x.com')['city'], 'Bengaluru')
+        # an Indian address without a locality does not borrow the next office's city
+        raw = '[{"addressCountry":"IN"},{"addressLocality":"London","addressCountry":"GB"}]'
+        self.assertEqual(multi.india_evidence([('https://x.com/', raw)], 'x.com'), {'india': True, 'city': '', 'why': 'schema.org addressCountry IN'})
+        # a nested object before the country (geo) is skipped when looking for the address's own brace
+        raw = '{"address":{"geo":{"lat":1},"addressLocality":"Pune","addressCountry":"India"},"x":{"addressLocality":"Paris"}}'
+        self.assertEqual(multi.india_evidence([('https://x.com/', raw)], 'x.com')['city'], 'Pune')
+
+    def test_enclosing_object(self):
+        raw = 'x {"a":1,"b":{"c":2},"d":"IN"} y'
+        at = raw.index('"d"')
+        self.assertEqual(multi.enclosing_object(raw, at, at + 8), '{"a":1,"b":{"c":2},"d":"IN"}')
+        self.assertEqual(multi.enclosing_object('"addressCountry":"IN"', 0, 21), '')
+
     def test_city_and_pin(self):
         r = multi.india_evidence([('https://x.com/contact', '<p>3rd Floor, 80 Feet Road</p><p>Koramangala, Bengaluru, Karnataka 560034</p>')], 'x.com')
         self.assertEqual((r['india'], r['city']), (True, 'Bengaluru'))
@@ -379,6 +403,25 @@ class Fetching(TempCache):
         self.assertFalse(multi.is_challenge('<html><body>' + '<p>We build software for clinics.</p>' * 200 + '<script src="recaptcha"></script></body></html>'))
         self.assertFalse(multi.is_challenge('{"hits": [{"title": "captcha"}]}'))
 
+    def test_login_redirect_is_blocked(self):
+        url = 'https://x.com/portfolio'
+        mock.patch.object(multi.scrape, 'fetch', return_value=('https://x.com/login?next=/portfolio', '<html>Sign in</html>')).start()
+        with self.assertRaises(multi.Blocked) as cm: multi.fetch_checked(url)
+        self.assertEqual((cm.exception.status, cm.exception.url), ('login', url))
+        with self.assertRaises(multi.Blocked):
+            multi.cached_text(os.path.join(multi.SRC, 'x', 'l.html'), url, refresh=True)
+        self.assertFalse(os.path.exists(os.path.join(multi.SRC, 'x', 'l.html')))       # a sign-in page is never cached
+        for final in ('https://x.com/users/sign_in', 'https://x.com/Sign-In', 'https://x.com/auth/signin'):
+            mock.patch.object(multi.scrape, 'fetch', return_value=(final, '<html></html>')).start()
+            with self.assertRaises(multi.Blocked, msg=final): multi.fetch_checked(url)
+        # the same URL, a trailing slash, or a redirect to a normal page returns the text
+        for final in (url, url + '/', 'https://www.x.com/portfolio', 'https://x.com/companies', 'https://x.com/blog/login-tips-for-founders'):
+            mock.patch.object(multi.scrape, 'fetch', return_value=(final, '<html>ok</html>')).start()
+            self.assertEqual(multi.fetch_checked(url), '<html>ok</html>', final)
+        # a page that is itself a login path is not a redirect
+        mock.patch.object(multi.scrape, 'fetch', return_value=('https://x.com/login', '<html>ok</html>')).start()
+        self.assertEqual(multi.fetch_checked('https://x.com/login'), '<html>ok</html>')
+
     def test_collect_records_blocked_and_empty(self):
         def blocked(refresh): raise multi.Blocked(403, 'https://blocked.example/portfolio')
         def fine(refresh): return [{'name': 'A'}]
@@ -422,6 +465,56 @@ class Fetching(TempCache):
         self.assertIsNone(dp.get('b', 'https://s.example/b'))
         self.assertEqual(self.asked, ['https://s.example/a'])
         self.assertEqual(multi._detail_blocks['stellaris'].status, 403)
+
+    def timeout_then(self, answers):
+        """Stub scrape.fetch with a list of answers in order: 'T' is a time-out, an int is an HTTP error, a str is the page."""
+        self.asked = []
+
+        def fake(url, *a, **kw):
+            self.asked.append(url)
+            v = answers.pop(0)
+            if v == 'T': raise urllib.error.URLError(TimeoutError('timed out'))
+            if isinstance(v, int): raise http_error(url, v)
+            return url, v
+        mock.patch.object(multi.scrape, 'fetch', side_effect=fake).start()
+
+    def test_detail_timeouts_reset_on_success(self):
+        dp = multi.DetailPages('elevation')
+        self.timeout_then(['T', 'T', 'ok', 'T', 'ok'])
+        got = [dp.get(k, 'https://e.example/' + k) for k in 'abcde']
+        self.assertEqual(got, [None, None, 'ok', None, 'ok'])
+        self.assertEqual(len(self.asked), 5)
+        self.assertIsNone(dp.blocked)
+        self.assertNotIn('elevation', multi._detail_blocks)
+
+    def test_detail_three_timeouts_in_a_row_stop(self):
+        dp = multi.DetailPages('elevation')
+        self.timeout_then(['T', 'T', 'T', 'never'])
+        for k in 'abc': self.assertIsNone(dp.get(k, 'https://e.example/' + k))
+        self.assertEqual(dp.blocked.status, 'timeout')
+        self.assertEqual(multi._detail_blocks['elevation'].status, 'timeout')
+        self.assertIsNone(dp.get('d', 'https://e.example/d'))
+        self.assertEqual(len(self.asked), 3)                                              # the 4th call makes no fetch
+
+    def test_detail_refusal_stops_at_once(self):
+        for code in (403, 429, 503):
+            multi._detail_blocks.clear()
+            dp = multi.DetailPages('prime')
+            self.timeout_then([code, code, 'never'])                                      # 429/503 are retried once by fetch_checked
+            self.assertIsNone(dp.get('a', 'https://p.example/a'))
+            self.assertEqual(dp.blocked.status, code)
+            self.assertIsNone(dp.get('b', 'https://p.example/b'))
+            self.assertEqual(len(self.asked), 1 if code == 403 else 2, code)
+        dp = multi.DetailPages('prime')
+        self.timeout_then(['<html><head><title>Just a moment...</title></head></html>', 'never'])
+        dp.get('a', 'https://p.example/a')
+        self.assertEqual(dp.blocked.status, 'challenge')
+        self.assertIsNone(dp.get('b', 'https://p.example/b'))
+        self.assertEqual(len(self.asked), 1)
+        dp = multi.DetailPages('prime')
+        mock.patch.object(multi.scrape, 'fetch', return_value=('https://p.example/login', '<html></html>')).start()
+        dp.get('a', 'https://p.example/a')
+        self.assertEqual(dp.blocked.status, 'login')
 
     def test_collect_elevation_end_to_end(self):
         base = 'https://elevationcapital.com'

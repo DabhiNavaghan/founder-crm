@@ -23,12 +23,30 @@ Never delete an item. Finished items move to "Done" at the bottom as one line ea
 - Why: task #6 is judged by the total on `/companies?country=india` (target 150+); read `summary.per_source`,
   `india_from_site` and `source_status` from `out/companies_multi.json`, fix the weakest gate or parser
 - Size: S
-- Status: open
+- Status: in progress (2026-11-24): honest India empty state, plus fixes 2, 3 and 4 below
+- Notes: 2026-11-24 `collect-last.json` has no elevation/stellaris/prime and no `source_status`, so the run used pre-PR #7 code.
+  Re-check on 2026-11-25. If they are still missing, ask the founder to update the collector checkout.
+  1. Add raw-HTML fixtures from `cache/sources/<slug>/` for Elevation, Stellaris, Prime (open)
+  2. Stop detail fetches only after 3 time-outs in a row, or on 403/429/challenge (`DetailPages.get`) (2026-11-24)
+  3. Record a redirect to `/login` or `/signin` as `Blocked('login')` (`fetch_checked`) (2026-11-24)
+  4. Take `addressLocality` from the same `address` object (`india_evidence`) (2026-11-24)
+
+### B-050 Strip query strings from LinkedIn links
+- Why: the company LinkedIn href ends `?viewAsMember=true` (research 2026-11-24, /companies/memorable)
+- Size: S
+- Status: in progress (2026-11-24)
+
+### B-051 Company page titles that match content
+- Why: the title says "careers & contact" on pages with no careers link (research 2026-11-24)
+- Size: S
+- Status: in progress (2026-11-24). List-page titles later
 
 ### B-046 Honest User-Agent in `scraper/scrape.py` for the US run (founder task #6)
 - Why: `scrape.py:20` is a Chrome string; task #6 sets it honest for multi.py only (plan 2026-11-23)
 - Size: S
 - Status: open
+- Notes: track `site_down` per US source before and after the honest UA (CTO review 2026-11-23, problem 4).
+  Baseline 2026-11-24 (old UA): a16z 72, sequoia 8, accel 20, antler 28
 
 ### B-049 Re-check India Quotient, 100X.VC, Chiratae listings (founder task #6)
 - Why: research 2026-11-23: robots empty or portfolio URL 404; more Indian sources with founders are needed
@@ -120,12 +138,6 @@ Never delete an item. Finished items move to "Done" at the bottom as one line ea
 - Status: open
 - Notes: may duplicate an item added on PR #3's branch; merge them when that PR lands
 
-### B-043 `to_enrich()` skips slugs not in COLLECTORS
-- Why: CTO review problem 3: stale `yc-india` candidates still cause site fetches (`scraper/multi.py:812-813`)
-- Size: S
-- Status: in progress (2026-11-23, founder task #6; PR #3's code is on the same branch, so no conflict)
-- Notes: one line `if slug not in COLLECTORS: continue`
-
 ### B-001 Go global: countries in the catalog, the pages and the collectors
 - Why: the product direction is a directory for all countries. Today everything is US-only, so most
   of the world's companies and most visitors are left out.
@@ -195,7 +207,14 @@ Never delete an item. Finished items move to "Done" at the bottom as one line ea
 - Why: the home page promises signed-in "emails", and its "After you sign in" preview shows a named
   founder (sample or real?). If the founder is real, that person is shown off their company page.
 - Size: S once decided
-- Status: open (needs the founder)
+- Status: open. Decided 2026-11-24: the email wording stays, because emails show only behind sign-in. Still open: check whether
+  the preview founder is a real person, and if so replace them with a clearly fictional sample
+
+### B-052 Legal-entity check from GLEIF LEI data (CC0)
+- Why: "is this company real" for job seekers and suppliers (research 2026-11-24, thin evidence). Terms allow reuse (CC0).
+  Read the Golden Copy "Automated download" terms first. Matching to our rows is the hard part
+- Size: L, migration; split before picking
+- Status: open
 
 ### B-002 Entry points for each audience
 - Why: visitors arrive with different goals; one generic directory page serves none of them well.
@@ -273,3 +292,4 @@ Never delete an item. Finished items move to "Done" at the bottom as one line ea
 - B-029 Peak XV, Kalaari, 3one4, Nexus | dropped (2026-11-23, their terms forbid scraping or reuse)
 - B-030 Python collector tests in a gate | done (2026-11-23, pipeline commit de0dd31 runs `python3 -m unittest`)
 - B-040 Team room slice 1: live agent dashboard at /app/team (founder task #4) | done (2026-11-23, CTO PASS)
+- B-043 `to_enrich()` skips slugs not in COLLECTORS | done (2026-11-23, PR #7)

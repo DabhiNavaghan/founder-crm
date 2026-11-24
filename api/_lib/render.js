@@ -66,7 +66,8 @@ export function safeLinkedin(u) {
   if (!url) return '';
   const p = new URL(url);
   const host = p.hostname.toLowerCase();
-  return (host === 'linkedin.com' || host.endsWith('.linkedin.com')) && /^\/(company|in|school|showcase)\/[^/]+/i.test(p.pathname) ? url : '';
+  // Tracking and view flags (?viewAsMember=true, ?trk=…, #…) are dropped: the link is origin + path only.
+  return (host === 'linkedin.com' || host.endsWith('.linkedin.com')) && /^\/(company|in|school|showcase)\/[^/]+/i.test(p.pathname) ? p.origin + p.pathname : '';
 }
 // A contact page has a path segment that is exactly one of these (so /solutions/contact-centers is not one).
 const CONTACT_SEGMENTS = new Set(['contact', 'contact-us', 'contactus', 'get-in-touch', 'support', 'help']);
@@ -269,8 +270,15 @@ export const FILTER_KEYS = ['q', 'sector', 'city', 'country', 'batch', 'year', '
 // Countries the directory can be browsed by: slug -> name. `place` is how a heading says "in ...".
 export const COUNTRIES = {
   'united-states': { name: 'United States', place: 'the United States' },
-  india: { name: 'India', place: 'India' },
+  india: { name: 'India', place: 'India', adjective: 'Indian' },
 };
+// Sources being collected for a country that has few or no rows yet, in the order they are named.
+export const COUNTRY_SOURCES = {
+  india: ['Elevation Capital', 'Stellaris Venture Partners', 'Prime Venture Partners', 'Antler India'],
+};
+// "A, B, C and D"
+export const joinNames = list => (list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}` : list.join(''));
+const countrySourceNames = slug => (Object.hasOwn(COUNTRY_SOURCES, slug || '') ? COUNTRY_SOURCES[slug] : []);
 export function listUrl(basePath, filters, change = {}) {
   const f = { ...filters, ...change };
   const parts = [];
@@ -378,9 +386,18 @@ ${f.year ? `<input type="hidden" name="year" value="${esc(f.year)}">` : ''}<butt
   const chipsHtml = filtered ? `<ul class="chips" aria-label="Active filters">${chips.join('')}<li><a class="clear" href="/companies">Clear filters</a></li></ul>` : '';
   const count = `<p class="count" role="status"><strong>${num(total)}</strong> ${all && (filtered || kind !== 'all') ? `of ${num(all)} companies` : plural(total, 'company', 'companies')}${page > 1 ? ` · page ${page} of ${num(pages)}` : ''}</p>`;
   const urlOf = p => (kind === 'all' ? listUrl('/companies', f, { page: p }) : path + (p > 1 ? '?page=' + p : ''));
-  const list = validRows(rows).length
+  // A country whose sources are still being collected gets an honest "being added" state when it is the only filter.
+  const hasRows = validRows(rows).length > 0;
+  const sourcesFor = country ? countrySourceNames(f.country) : [];
+  const otherFilters = Boolean(f.q || f.sector || f.city || f.source || f.batch || f.year || f.hiring);
+  const countryEmpty = kind === 'all' && !hasRows && sourcesFor.length > 0 && !otherFilters;
+  const countryButton = kind === 'all' && country && otherFilters
+    ?`<a class="btn" href="${esc(listUrl('/companies', {}, { country: f.country }))}">All companies in ${esc(country.name)}</a>` : '';
+  const list = hasRows
     ? rowsList(rows) + '\n' + pager(urlOf, page, pages)
-    : `<div class="state"><h2>No companies match these filters.</h2><p>Try removing a filter, or browse the newest additions.</p><div class="actions"><a class="btn btn-dark" href="/companies">Clear filters</a><a class="btn" href="/new">See new companies</a></div></div>`;
+    : countryEmpty
+      ? `<div class="state"><h2>Companies in ${esc(country.name)} are being added.</h2><p>We are collecting ${esc(country.adjective || country.name)} startups from the public lists of ${esc(joinNames(sourcesFor))}. New companies are added once a day, so check back soon.</p><div class="actions"><a class="btn btn-dark" href="/companies">Browse all companies</a><a class="btn" href="/about-data">How we collect data</a></div></div>`
+      : `<div class="state"><h2>No companies match these filters.</h2><p>Try removing a filter, or browse the newest additions.</p><div class="actions"><a class="btn btn-dark" href="/companies">Clear filters</a>${countryButton}<a class="btn" href="/new">See new companies</a></div></div>`;
   // A plain link into the India view, only on /companies and only when no country is chosen yet.
   const browse = kind === 'all' && !country ? '<ul class="chips" aria-label="Browse by country"><li><a class="pill" href="/companies?country=india">Browse India</a></li></ul>\n' : '';
   const results = `<section class="results" id="results" aria-label="Results">\n${count}\n${browse}${chipsHtml}\n${list}\n</section>\n<p class="sr-only" id="live" aria-live="polite"></p>`;
@@ -410,6 +427,7 @@ ${f.year ? `<input type="hidden" name="year" value="${esc(f.year)}">` : ''}<butt
     description = filtered
       ? `${num(total)} ${plural(total, 'result', 'results')} for ${subject}${extras ? ' (' + extras + ')' : ''}: founders, careers pages and contact links.`
       : `Browse ${num(all)} startups by sector, city, source and batch. Each page lists the founders, careers page, contact page and LinkedIn.${page > 1 ? ` Page ${page} of ${num(pages)}.` : ''}`;
+    if (countryEmpty) description = `${country.adjective || country.name} startups are being added to FoundReach from ${joinNames(sourcesFor)}.`;
   }
   const factsHtml = type && facts ? `<div class="facts"><div><b>${num(total)}</b><span>${plural(total, 'company', 'companies')}</span></div><div><b>${num(facts.hiring)}</b><span>hiring now</span></div><div><b>${num(facts.leaders)}</b><span>leaders listed</span></div><div><b>${num(facts.new)}</b><span>new this week</span></div></div>` : '';
 
@@ -512,8 +530,9 @@ export function renderCompany(c, { similar = [], nav = null } = {}) {
   const site = c.name_shared && safeUrl(c.website) ? shortUrl(safeUrl(c.website)).split('/')[0] : '';
   const badges = badgesOf(c);
   const label = [tag || badges[0]?.label, site].filter(Boolean).join(', ');
-  const title = `${name}${label ? ` (${label})` : ''}: founders, careers & contact | FoundReach`;
-  const metaDescription = `${name}${label ? ` (${label})` : ''}${city ? ', ' + city : ''}${flat ? ': ' + clip(flat, 150) : ''} Founders, careers page and contact links.`;
+  // "careers" is named in the title only when the page shows a careers link.
+  const title = `${name}${label ? ` (${label})` : ''}: ${careers ? 'founders, careers & contact' : 'founders & contact'} | FoundReach`;
+  const metaDescription = `${name}${label ? ` (${label})` : ''}${city ? ', ' + city : ''}${flat ? ': ' + clip(flat, 150) : ''} ${careers ? 'Founders, careers page and contact links.' : 'Founders and contact links.'}`;
 
   // Pages that exist, from the cached site stats. Without them the badge and collection links are left out.
   const sourcePages = new Set((nav?.top_sources || []).map(s => s.slug));
@@ -618,7 +637,7 @@ export function renderAbout({ nav = null }) {
 <div class="hero" id="hero"><p class="eyebrow">About the data</p><h1>Our data</h1><p class="sub">What FoundReach lists, where it comes from, how often it is refreshed and what we never publish.</p></div>
 <div class="prose">
 <h2 id="what">What we list</h2>
-<p>FoundReach is a free directory of startups${total ? ` (${num(total)} companies today)` : ''}. Most are based in the United States today. More countries are coming. Each company page shows a short description, its sector and location, the links that help you get in touch (website, careers page, contact page and company LinkedIn) and the founders and leaders with their public LinkedIn profiles.</p>
+<p>FoundReach is a free directory of startups${total ? ` (${num(total)} companies today)` : ''}. Most are based in the United States today. More countries are coming. Companies in India are being added now, from the public lists of ${esc(joinNames(COUNTRY_SOURCES.india))}. Each company page shows a short description, its sector and location, the links that help you get in touch (website, careers page, contact page and company LinkedIn) and the founders and leaders with their public LinkedIn profiles.</p>
 <h2 id="sources">Sources and what badges mean</h2>
 <p>Companies come from public startup directories and from each company's own website. A badge on a company, such as "YC S24", says which public list it appears on and, where known, which batch or year. A company can carry more than one badge.</p>
 ${sources.length ? `<ul>${sources.map(s => `<li><a href="${esc(s.url)}">${esc(text(s.label))}</a>: ${num(s.count)} ${plural(s.count, 'company', 'companies')}</li>`).join('')}</ul>` : ''}

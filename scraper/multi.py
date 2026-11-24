@@ -205,11 +205,22 @@ def retry_after(value, default=30, cap=300):
     return default
 
 
+LOGIN_PATH = re.compile(r'/(?:login|signin|sign-in|users/sign_in)(?:/|\.\w+$|$)', re.I)   # a whole path segment: /login, /login.php
+
+
+def login_redirect(requested, final):
+    """True when a 200 answer came from a different path that is a sign-in page: the source wants a login, which we never do."""
+    if not final: return False
+    want, got = urllib.parse.urlparse(requested).path or '/', urllib.parse.urlparse(final).path or '/'
+    return want.rstrip('/') != got.rstrip('/') and bool(LOGIN_PATH.search(got))
+
+
 def fetch_checked(url, timeout=40, limit=30_000_000):
-    """scrape.fetch, but a refusal or a time-out raises Blocked. After 429/503 it waits (Retry-After) and tries once more."""
+    """scrape.fetch, but a refusal, a time-out or a jump to a sign-in page raises Blocked. After 429/503 it waits (Retry-After)
+    and tries once more."""
     for attempt in (1, 2):
         try:
-            _, text = scrape.fetch(url, timeout=timeout, limit=limit)
+            final, text = scrape.fetch(url, timeout=timeout, limit=limit)
         except urllib.error.HTTPError as e:
             if e.code in (429, 503) and attempt == 1:
                 time.sleep(retry_after(e.headers.get('Retry-After') if e.headers else None))
@@ -218,6 +229,7 @@ def fetch_checked(url, timeout=40, limit=30_000_000):
             raise
         except (urllib.error.URLError, TimeoutError, ConnectionError):
             raise Blocked('timeout', url)
+        if login_redirect(url, final): raise Blocked('login', url)
         if is_challenge(text): raise Blocked('challenge', url)
         return text
 
@@ -610,11 +622,14 @@ def india_candidate(slug, name, website, sector, source_url, people, year=None, 
 
 class DetailPages:
     """One source's detail pages, cached in cache/sources/<slug>/detail/. A cached page is re-fetched only after DETAIL_MAX_AGE,
-    whatever --refresh says; at most `cap` new fetches per run, so the next night continues where this one stopped. A Blocked
-    on a detail page stops this source's detail fetches for the run (older cached pages are still read)."""
+    whatever --refresh says; at most `cap` new fetches per run, so the next night continues where this one stopped. A refusal
+    (403/429/503, a challenge or a sign-in page) stops this source's detail fetches for the run at once; time-outs stop them only
+    after TIMEOUTS_IN_A_ROW in a row, so one slow page does not end the night (older cached pages are still read)."""
+    TIMEOUTS_IN_A_ROW = 3
+
     def __init__(self, slug, cap=DETAIL_CAP, pause=INDIA_PAUSE):
         self.slug, self.cap, self.pause = slug, cap, pause
-        self.fetched = self.waiting = 0
+        self.fetched = self.waiting = self.timeouts = 0
         self.blocked = None
 
     def path(self, key):
@@ -629,9 +644,16 @@ class DetailPages:
             return cached_text(path, url) if have else None
         self.fetched += 1
         try:
-            return cached_text(path, url, refresh=True, timeout=25, limit=3_000_000, pause=self.pause)
+            text = cached_text(path, url, refresh=True, timeout=25, limit=3_000_000, pause=self.pause)
+            self.timeouts = 0
+            return text
         except Blocked as e:
-            self.blocked = _detail_blocks[self.slug] = e
+            if e.status == 'timeout':
+                self.timeouts += 1
+                print(f'[collect] {self.slug}: {url} timed out ({self.timeouts} in a row)', flush=True)
+                if self.timeouts >= self.TIMEOUTS_IN_A_ROW: self.blocked = _detail_blocks[self.slug] = e
+            else:
+                self.blocked = _detail_blocks[self.slug] = e
         except Exception as e:
             print(f'[collect] {self.slug}: {url} failed ({type(e).__name__})', flush=True)
         return cached_text(path, url) if have else None
@@ -1108,6 +1130,31 @@ def in_city(s):
     return IN_CITIES[m.group(1).lower()] if m else ''
 
 
+def enclosing_object(raw, start, end, reach=4000):
+    """The JSON object text around raw[start:end]: from its own '{' to its matching '}', skipping nested objects on either side.
+    '' when no balanced object is found within `reach` characters. Braces inside strings are rare in JSON-LD and not handled."""
+    depth, i, lo = 0, start - 1, -1
+    while i >= max(0, start - reach):
+        c = raw[i]
+        if c == '}': depth += 1
+        elif c == '{':
+            if depth == 0: lo = i; break
+            depth -= 1
+        i -= 1
+    if lo < 0: return ''
+    i, stop = end, min(len(raw), end + reach)
+    # the matched text may hold an opened nested object ({"@type":"Country","name":"IN"}) that is still open at `end`
+    depth = raw[start:end].count('{') - raw[start:end].count('}')
+    while i < stop:
+        c = raw[i]
+        if c == '{': depth += 1
+        elif c == '}':
+            if depth == 0: return raw[lo:i + 1]
+            depth -= 1
+        i += 1
+    return ''
+
+
 def india_evidence(pages, host):
     """Does the company's own site state an address in India? Returns {india: True|None, city, why}. Any one counts:
     (a) schema.org addressCountry IN/India (city = addressLocality); (b) a known Indian city within 80 characters of a 6-digit PIN;
@@ -1119,8 +1166,9 @@ def india_evidence(pages, host):
         path = urllib.parse.urlparse(url).path or '/'
         for m in re.finditer(r'"addressCountry"\s*:\s*(?:\{[^}]*?"name"\s*:\s*)?"([^"]{2,40})"', raw or ''):
             if m.group(1).strip().upper() not in IN_COUNTRY: continue
-            win = raw[max(0, m.start() - 600):m.end() + 600]
-            lo = re.search(r'"addressLocality"\s*:\s*"([^"]{2,40})"', win)
+            # the locality of this address only: another office's addressLocality nearby is never read
+            win = enclosing_object(raw, m.start(), m.end())
+            lo = re.search(r'"addressLocality"\s*:\s*"([^"]{2,40})"', win) if win else None
             loc = clean(lo.group(1)) if lo else ''
             city = in_city(loc) or (loc if re.fullmatch(r"[A-Z][A-Za-z.' -]{2,30}", loc) else '')
             found.append((0, city, 'schema.org addressCountry ' + m.group(1).strip()))

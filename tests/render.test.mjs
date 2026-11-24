@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { countryName, quickView, renderAbout, renderCompany, renderList, renderNew } from '../api/_lib/render.js';
+import { COUNTRY_SOURCES, countryName, joinNames, quickView, renderAbout, renderCompany, renderList, renderNew, safeLinkedin } from '../api/_lib/render.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DOT = '<span aria-hidden="true">&middot;</span>';
@@ -150,6 +150,92 @@ test('the home eyebrow no longer repeats the footer slogan', () => {
   const home = readFileSync(path.join(root, 'index.html'), 'utf8');
   assert.ok(home.includes('<p class="eyebrow">Free company directory</p>'));
   assert.equal(home.split('one step from its founders').length - 1, 2, 'footer and JSON-LD slogan only');
+});
+
+const EMPTY_FILTERS = { q: '', sector: '', city: '', country: '', source: '', batch: '', year: '', hiring: false, page: 1 };
+const countryList = (filters, rows = []) => renderList({ kind: 'all', filters: { ...EMPTY_FILTERS, ...filters }, facets: { total: 3635 }, total: rows.length, rows });
+const stateOf = html => (html.match(/<div class="state">[\s\S]*?<\/div><\/div>/) || [''])[0];
+const GENERIC_STATE = '<div class="state"><h2>No companies match these filters.</h2><p>Try removing a filter, or browse the newest additions.</p><div class="actions"><a class="btn btn-dark" href="/companies">Clear filters</a><a class="btn" href="/new">See new companies</a></div></div>';
+
+test('India with no rows says companies are being added and names the sources', () => {
+  const html = countryList({ country: 'india' });
+  const state = stateOf(html);
+  assert.ok(state.includes('<h2>Companies in India are being added.</h2>'));
+  for (const name of COUNTRY_SOURCES.india) assert.ok(state.includes(name), name);
+  assert.ok(state.includes('Elevation Capital, Stellaris Venture Partners, Prime Venture Partners and Antler India.'));
+  assert.ok(state.includes('<a class="btn btn-dark" href="/companies">Browse all companies</a>'));
+  assert.ok(state.includes('<a class="btn" href="/about-data">How we collect data</a>'));
+  assert.ok(!html.includes('No companies match these filters'));
+  assert.equal(html.split('<h1').length - 1, 1, 'one h1');
+  assert.ok(!/<script(?![^>]*application\/ld\+json)/.test(state), 'no script');
+  assert.ok(html.includes('content="Indian startups are being added to FoundReach from Elevation Capital, Stellaris Venture Partners, Prime Venture Partners and Antler India."'));
+  assert.equal(html.match(/<title>(.*?)<\/title>/)[1], 'Startups in India: founders, careers &amp; contact | FoundReach');
+  assert.ok(!EMAIL.test(state));
+});
+
+test('India with another filter and no rows keeps the generic state and links to all of India', () => {
+  const html = countryList({ country: 'india', sector: 'fintech' });
+  const state = stateOf(html);
+  assert.ok(state.includes('No companies match these filters'));
+  assert.ok(state.includes('<a class="btn btn-dark" href="/companies">Clear filters</a><a class="btn" href="/companies?country=india">All companies in India</a><a class="btn" href="/new">See new companies</a>'));
+  assert.ok(!html.includes('are being added'));
+  for (const extra of [{ q: 'pay' }, { city: 'bengaluru' }, { source: 'antler' }, { hiring: true }, { year: '2024' }]) {
+    assert.ok(countryList({ country: 'india', ...extra }).includes('href="/companies?country=india">All companies in India'), JSON.stringify(extra));
+  }
+});
+
+test('no country and no rows keeps today\'s generic state', () => {
+  assert.equal(stateOf(countryList({})), GENERIC_STATE);
+  assert.equal(stateOf(countryList({ sector: 'fintech' })), GENERIC_STATE);
+  // A country without collected sources, or an unknown slug, gets the generic state too.
+  assert.equal(stateOf(countryList({ country: 'united-states' })), GENERIC_STATE);
+  assert.equal(stateOf(countryList({ country: 'atlantis' })), GENERIC_STATE);
+  assert.ok(!countryList({ country: 'atlantis' }).includes('atlantis'));
+});
+
+test('India with rows shows the rows and no empty state', () => {
+  const html = countryList({ country: 'india' }, [company({ country: 'India', city: 'Bengaluru' })]);
+  assert.ok(html.includes('href="/companies/acme"'));
+  assert.ok(!html.includes('are being added'));
+  assert.ok(!html.includes('class="state"'));
+});
+
+test('/about-data names the India sources', () => {
+  const about = renderAbout({ nav: { companies: 3625 } });
+  assert.ok(about.includes('More countries are coming. Companies in India are being added now, from the public lists of Elevation Capital, Stellaris Venture Partners, Prime Venture Partners and Antler India.'));
+});
+
+test('joinNames joins with commas and a final "and"', () => {
+  assert.equal(joinNames([]), '');
+  assert.equal(joinNames(['A']), 'A');
+  assert.equal(joinNames(['A', 'B']), 'A and B');
+  assert.equal(joinNames(['A', 'B', 'C']), 'A, B and C');
+});
+
+test('LinkedIn links lose their query string and fragment', () => {
+  assert.equal(safeLinkedin('https://www.linkedin.com/company/memorable/?viewAsMember=true'), 'https://www.linkedin.com/company/memorable/');
+  assert.equal(safeLinkedin('https://linkedin.com/in/jane-doe?trk=x#a'), 'https://linkedin.com/in/jane-doe');
+  assert.equal(safeLinkedin('https://www.linkedin.com/company/acme'), 'https://www.linkedin.com/company/acme');
+  for (const bad of ['https://example.com/company/acme', 'https://www.linkedin.com/search/results?q=x', 'javascript:alert(1)', '', 'data:text/html,x', 'https://linkedin.com.evil.example/in/x']) {
+    assert.equal(safeLinkedin(bad), '', bad);
+  }
+  const html = renderCompany(company({ linkedin_url: 'https://www.linkedin.com/company/acme/?viewAsMember=true' }));
+  assert.ok(html.includes('https://www.linkedin.com/company/acme/'));
+  assert.ok(!html.includes('viewAsMember'));
+});
+
+test('company title and description name careers only when there is a careers link', () => {
+  const without = renderCompany(company());
+  const title = without.match(/<title>(.*?)<\/title>/)[1];
+  assert.equal(title, 'Acme: founders &amp; contact | FoundReach');
+  const desc = without.match(/<meta name="description" content="([^"]*)"/)[1];
+  assert.ok(desc.endsWith('Founders and contact links.'), desc);
+  assert.ok(!/careers/i.test(title + desc));
+  const withCareers = renderCompany(company({ careers_url: 'https://acme.example/careers' }));
+  assert.equal(withCareers.match(/<title>(.*?)<\/title>/)[1], 'Acme: founders, careers &amp; contact | FoundReach');
+  assert.ok(withCareers.match(/<meta name="description" content="([^"]*)"/)[1].endsWith('Founders, careers page and contact links.'));
+  // An unsafe careers URL is not shown, so the title does not promise it.
+  assert.ok(!/careers/i.test(renderCompany(company({ careers_url: 'javascript:alert(1)' })).match(/<title>(.*?)<\/title>/)[1]));
 });
 
 test('the country migration only replaces the two functions and keeps their keys', () => {
